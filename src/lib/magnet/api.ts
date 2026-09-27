@@ -44,10 +44,7 @@ export async function fetchMetadata(
 }
 
 export async function fetchSeeders(infoHash: string, signal?: AbortSignal): Promise<number> {
-	const seedersApiUrl = import.meta.env.PUBLIC_SEEDERS_API_URL;
-	if (!seedersApiUrl) {
-		throw new Error("Seeders API is not configured (PUBLIC_SEEDERS_API_URL)");
-	}
+	const seedersApiUrl = "https://magnet-seeders.opentrust.it";
 
 	const url = new URL("/peers", seedersApiUrl);
 	url.searchParams.set("hash", infoHash);
