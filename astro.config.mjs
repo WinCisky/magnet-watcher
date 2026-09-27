@@ -6,6 +6,8 @@ import tailwindcss from '@tailwindcss/vite';
 
 // https://astro.build/config
 export default defineConfig({
+  site: 'https://wincisky.github.io',
+  base: '/magnet-watcher',
   integrations: [svelte()],
 
   vite: {
