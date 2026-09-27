@@ -2,6 +2,7 @@
 import '../styles/global.css';
 import { createInitialModeExpression } from 'mode-watcher';
 import ModeToggle from '../lib/components/mode-toggle.svelte';
+import MagnetFlow from '../lib/components/magnet-flow.svelte';
 ---
 
 <html lang="en">
@@ -11,11 +12,15 @@ import ModeToggle from '../lib/components/mode-toggle.svelte';
 		<link rel="icon" href="/favicon.ico" />
 		<meta name="viewport" content="width=device-width" />
 		<meta name="generator" content={Astro.generator} />
-		<title>Astro</title>
+		<title>Magnet Watcher</title>
 		<script is:inline set:html={createInitialModeExpression()} />
 	</head>
 	<body>
-		<h1>Astro</h1>
-		<ModeToggle client:load />
+		<div class="fixed top-4 right-4 z-50">
+			<ModeToggle client:load />
+		</div>
+		<main class="grid min-h-dvh place-items-center">
+			<MagnetFlow client:load />
+		</main>
 	</body>
 </html>
