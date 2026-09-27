@@ -1,5 +1,7 @@
 ---
-
+import '../styles/global.css';
+import { createInitialModeExpression } from 'mode-watcher';
+import ModeToggle from '../lib/components/mode-toggle.svelte';
 ---
 
 <html lang="en">
@@ -10,8 +12,10 @@
 		<meta name="viewport" content="width=device-width" />
 		<meta name="generator" content={Astro.generator} />
 		<title>Astro</title>
+		<script is:inline set:html={createInitialModeExpression()} />
 	</head>
 	<body>
 		<h1>Astro</h1>
+		<ModeToggle client:load />
 	</body>
 </html>
