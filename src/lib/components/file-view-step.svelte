@@ -118,7 +118,7 @@
 
 			<div class="flex flex-col gap-1 text-center text-xs text-white/60 tabular-nums">
 				<p>
-					Peers: {snapshot.peers.active} fetching · {snapshot.peers.reachable} reachable · {snapshot.peers.seeds}
+					Peers: {snapshot.peers.active} fetching ({snapshot.peers.connections} connections) · {snapshot.peers.reachable} reachable · {snapshot.peers.seeds}
 					seeds · {snapshot.peers.known || seeders} known{#if snapshot.peers.backedOff > 0}&nbsp;· {snapshot.peers.backedOff}
 						resting{/if}{#if snapshot.peers.banned > 0}&nbsp;· {snapshot.peers.banned} banned{/if}
 				</p>

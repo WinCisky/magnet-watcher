@@ -42,7 +42,10 @@ export interface EngineSnapshot {
 		known: number;
 		reachable: number;
 		seeds: number;
+		/** Peers with at least one open request. */
 		active: number;
+		/** Open peer connections (fast peers can have several). */
+		connections: number;
 		usable: number;
 		backedOff: number;
 		banned: number;
@@ -107,8 +110,10 @@ export class RecoveryEngine {
 				swarm: this.swarm,
 				transport: workerTransport(workerUrl, meta),
 				store: this.store,
-				// Over plain HTTP (local dev) browsers allow ~6 connections per host.
-				maxActive: workerUrl.startsWith("https:") ? 8 : 5,
+				// The scheduler scales up to this with the usable peers. Over plain
+				// HTTP (local dev) browsers allow ~6 connections per host; HTTPS
+				// multiplexes requests over one HTTP/2 connection.
+				maxActive: workerUrl.startsWith("https:") ? 24 : 5,
 				debug: this.opts.debug,
 			});
 			this.scheduler.markVerified(stored);
@@ -201,7 +206,7 @@ export class RecoveryEngine {
 			}
 		}
 		const remaining = range ? range.size - verifiedBytes : 0;
-		const peerStats = this.swarm?.stats() ?? { active: 0, usable: 0, backedOff: 0, banned: 0 };
+		const peerStats = this.swarm?.stats() ?? { active: 0, connections: 0, usable: 0, backedOff: 0, banned: 0 };
 
 		this.opts.onSnapshot({
 			phase: this.phase,

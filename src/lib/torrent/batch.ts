@@ -22,7 +22,10 @@ export interface BatchPlan {
 export interface BatchSink {
 	/** The worker's winner, the blocks it requested, and how the others fared. */
 	started(preamble: Preamble, sent: Array<[number, number]>): void;
-	/** Returns true when the batch has nothing left to wait for. */
+	/**
+	 * Returns true when the batch has nothing left to wait for. `data` is
+	 * only valid during the call.
+	 */
 	block(piece: number, begin: number, data: Uint8Array): boolean;
 	/** Returns true when the batch has nothing left to wait for. */
 	rejected(piece: number, begin: number): boolean;
@@ -63,13 +66,20 @@ export function workerTransport(workerUrl: string, meta: Metainfo): Transport {
 		let end: BatchEnd | null = null;
 		// The worker answers once a peer unchoked (or all failed): allow the
 		// unchoke wait plus connection setup.
-		const headersTimer = setTimeout(abort, plan.waitMs + 8_000);
+		let headersLate = false;
+		const headersTimer = setTimeout(() => {
+			headersLate = true;
+			abort();
+		}, plan.waitMs + 8_000);
 		try {
 			let res: Response;
 			try {
 				res = await fetch(url, { signal: controller.signal, cache: "no-store" });
-			} catch {
-				return signal.aborted ? { kind: "aborted", bytes } : { kind: "error", message: "network", bytes };
+			} catch (e) {
+				if (signal.aborted) return { kind: "aborted", bytes };
+				// No answer in time: this request's problem, not the worker's.
+				if (headersLate) return { kind: "stalled", bytes };
+				return { kind: "error", message: `network: ${describe(e)}`, bytes };
 			} finally {
 				clearTimeout(headersTimer);
 			}
@@ -130,4 +140,12 @@ export function workerTransport(workerUrl: string, meta: Metainfo): Transport {
 			signal.removeEventListener("abort", abort);
 		}
 	};
+}
+
+/** The most specific description of a fetch failure (for debug lines). */
+function describe(e: unknown): string {
+	if (!(e instanceof Error)) return String(e);
+	const cause = (e as { cause?: unknown }).cause;
+	if (cause instanceof Error) return `${e.message} (${(cause as { code?: string }).code ?? cause.message})`;
+	return e.message;
 }

@@ -63,7 +63,7 @@ describe("BlockStreamParser", () => {
 				preamble: (p) => events.push(`preamble ${p.peer} ${p.sent}`),
 				block: (piece, begin, data) => {
 					events.push(`block ${piece}:${begin}`);
-					blocks.push(data);
+					blocks.push(data.slice());
 				},
 				choke: () => events.push("choke"),
 				reject: (piece, begin, length) => events.push(`reject ${piece}:${begin}:${length}`),

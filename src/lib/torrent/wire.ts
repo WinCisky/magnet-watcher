@@ -16,6 +16,7 @@ export interface Preamble {
 
 export interface StreamEvents {
 	preamble(p: Preamble): void;
+	/** `data` is a view into the parser's buffer: copy it before returning. */
 	block(piece: number, begin: number, data: Uint8Array): void;
 	/** A choke after the peer had unchoked us: outstanding requests are dropped. */
 	choke(): void;
@@ -81,8 +82,9 @@ export class BlockStreamParser {
 				break;
 			case 7: // piece
 				if (len >= 8) {
-					// Copy: the buffer is reused for later chunks.
-					this.events.block(this.u32(at), this.u32(at + 4), this.buf.slice(at + 8, at + len));
+					// A view, not a copy: the consumer copies it into its piece
+					// buffer right away (saves an allocation per 16 KiB block).
+					this.events.block(this.u32(at), this.u32(at + 4), this.buf.subarray(at + 8, at + len));
 				}
 				break;
 			case 16: // reject request (BEP 6)

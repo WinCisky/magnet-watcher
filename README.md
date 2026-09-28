@@ -19,10 +19,20 @@ movable front) so it can back streaming and seeking later.
   page asks it for blocks from 1–3 candidate peers, and it streams back
   whatever the fastest one sends, unverified.
 - The engine in `src/lib/torrent/` schedules the requests, assembles the
-  pieces, and checks each piece's SHA-1. Verified pieces are stored in Cache
-  Storage (one cache per torrent), so a reload resumes where it left off. The
-  view shows every piece's state (recovered, downloading, pending, no source,
-  failed check) on a piece map and a seek-bar-style strip.
+  pieces, and checks each piece's SHA-1. How it schedules:
+  - Requests run in parallel: up to 24 at once, fewer on a slow connection.
+  - Each request is a run of blocks sized to the peer's measured speed,
+    because every request pays ~0.2–1 s of setup.
+  - Near the playback front, it uses only peers that unchoke quickly.
+  - Peers that serve fast get up to 3 parallel connections.
+  - Peers that crawl have their blocks handed to others.
+  - Peers that unchoke on a timer (Transmission) are given a longer wait
+    instead of being marked as failures.
+
+  Verified pieces are stored in Cache Storage (one cache per torrent), so a
+  reload resumes where it left off. The view shows every piece's state
+  (recovered, downloading, pending, no source, failed check) on a piece map
+  and a seek-bar-style strip.
 
 Service URLs default to production. Override them at build/dev time:
 

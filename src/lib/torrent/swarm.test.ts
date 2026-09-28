@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { SwarmSnapshot } from "$lib/magnet/api";
-import { Swarm } from "./swarm";
+import { Swarm, isProven, isQuickUnchoker } from "./swarm";
 
 function snapshot(peers: SwarmSnapshot["peers"], tokenExp = 2_000_000_000): SwarmSnapshot {
 	return {
@@ -46,9 +46,9 @@ describe("Swarm", () => {
 		await swarm.refresh();
 		const a = swarm.peers.get(seed.addr)!;
 		swarm.failed(a, "choked");
-		expect(a.backoffUntil).toBe(now + 60_000);
+		expect(a.backoffUntil).toBe(now + 45_000);
 		swarm.failed(a, "choked");
-		expect(a.backoffUntil).toBe(now + 120_000);
+		expect(a.backoffUntil).toBe(now + 90_000);
 		// Unreachable from the worker although magnet-seeders reached it: a blip.
 		const probed = swarm.peers.get(partial.addr)!;
 		swarm.failed(probed, "connect_timeout");
@@ -81,5 +81,40 @@ describe("Swarm", () => {
 		await swarm.refresh();
 		expect(swarm.candidates([0])).toHaveLength(0);
 		expect(swarm.hasIdlePeer()).toBe(false);
+	});
+	it("gives fast peers more connections and learns who unchokes slowly", async () => {
+		let now = 1_000_000;
+		const slowUnchoker = { addr: "4.4.4.4:4", ok: true, seed: true, fast: true, t: "tok-d" };
+		const swarm = new Swarm(async () => snapshot([seed, slowUnchoker]), () => {}, () => now);
+		await swarm.refresh();
+		const a = swarm.peers.get(seed.addr)!;
+		expect(swarm.connLimit(a)).toBe(1);
+		swarm.acquire(a);
+		expect(swarm.available(a)).toBe(false);
+		swarm.won(a, 4_000_000, 1_000);
+		expect(swarm.connLimit(a)).toBe(2);
+		expect(swarm.available(a)).toBe(true);
+		expect(isProven(a)).toBe(true);
+
+		// A refused parallel connection: back to one, no rest.
+		swarm.failed(a, "closed", true);
+		expect(swarm.connLimit(a)).toBe(1);
+		expect(a.backoffUntil).toBeLessThanOrEqual(now);
+		swarm.release(a);
+		expect(swarm.available(a)).toBe(true);
+
+		// Transmission-style: no quick unchoke; a choke after serving us is
+		// just its rechoke timer.
+		const t = swarm.peers.get(slowUnchoker.addr)!;
+		expect(isQuickUnchoker(t)).toBe(false);
+		swarm.noteUnchoke(t, 9_000);
+		swarm.won(t, 500_000, 1_000);
+		expect(isProven(t)).toBe(false);
+		swarm.failed(t, "choked");
+		expect(t.backoffUntil).toBe(now + 15_000);
+		now += 20_000;
+		swarm.failed(t, "slow");
+		expect(t.maxConns).toBe(1);
+		expect(t.backoffUntil).toBe(now + 4 * 60_000);
 	});
 });
