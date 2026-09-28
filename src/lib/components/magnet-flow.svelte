@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { onMount } from "svelte";
-	import { fetchMetadata, fetchSeeders, type TorrentMetadata } from "$lib/magnet/api";
+	import { fetchMetadata, fetchSeeders, warmUpSwarm, type TorrentMetadata } from "$lib/magnet/api";
 	import { isVideoFile } from "$lib/magnet/files";
 	import MagnetInputStep from "./magnet-input-step.svelte";
 	import FileSelectStep from "./file-select-step.svelte";
@@ -62,6 +62,9 @@
 
 		try {
 			const meta = await fetchMetadata(magnetUri, controller.signal);
+			// Let magnet-seeders probe the swarm and fetch the piece hashes
+			// while the user is still choosing a file.
+			warmUpSwarm(magnetUri, meta.info_hash);
 			verifyPhase = "seeders";
 			const count = await fetchSeeders(meta.info_hash, controller.signal);
 
@@ -185,8 +188,10 @@
 
 {#if step === "select" && metadata}
 	<FileSelectStep name={metadata.name} files={videoFiles} onSelect={handleSelect} />
-{:else if step === "view" && selectedFile && seedersCount != null}
-	<FileViewStep file={selectedFile} seeders={seedersCount} />
+{:else if step === "view" && selectedFile && seedersCount != null && metadata && currentMagnet}
+	{#key `${currentMagnet}#${selectedFileIndex}`}
+		<FileViewStep file={selectedFile} magnet={currentMagnet} infoHash={metadata.info_hash} seeders={seedersCount} />
+	{/key}
 {:else}
 	<MagnetInputStep
 		bind:value={inputValue}
