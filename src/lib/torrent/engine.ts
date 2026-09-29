@@ -1,7 +1,7 @@
 // Recovers the pieces of one file: fetches and checks the info dict, keeps
 // the swarm fresh, runs the scheduler, and reports progress for the UI.
 
-import { WORKER_API_URL, fetchInfoDict, fetchSwarm } from "$lib/magnet/api";
+import { WORKER_API_URL, fetchInfoDict, fetchSwarm, fetchWorkerMaxCandidates, type SwarmSnapshot } from "$lib/magnet/api";
 import { workerTransport } from "./batch";
 import { fileRange, parseInfoDict, type FileRange, type Metainfo } from "./metainfo";
 import { Scheduler, PieceState } from "./scheduler";
@@ -9,6 +9,12 @@ import { openPieceStore, type PieceStore } from "./store";
 import { Swarm } from "./swarm";
 
 const SNAPSHOT_MS = 200;
+/** A hung request would otherwise stall recovery for good (retried after). */
+const INFO_DICT_TIMEOUT_MS = 30_000;
+/** magnet-seeders may be probing the swarm first (~10 s when cold). */
+const SWARM_TIMEOUT_MS = 60_000;
+/** No answer about the worker's capabilities: assume an older worker. */
+const WORKER_INFO_TIMEOUT_MS = 5_000;
 const AVAILABILITY_MS = 5_000;
 /** Block keys pack the block index in 12 bits (see scheduler). */
 const MAX_PIECE_LENGTH = 64 * 1024 * 1024;
@@ -60,6 +66,14 @@ export interface EngineOptions {
 	file: { path: string; offset: number; size: number };
 	onSnapshot: (snapshot: EngineSnapshot) => void;
 	workerUrl?: string;
+	/** Where verified pieces go (default: Cache Storage, else memory). */
+	store?: PieceStore;
+	/** Where peers come from (default: magnet-seeders' /swarm). */
+	fetchSwarm?: () => Promise<SwarmSnapshot>;
+	/** Parallel worker requests (default: 24 over HTTPS, 5 over plain HTTP). */
+	maxActive?: number;
+	/** Candidates per request (default: what the worker's /v1/info says). */
+	maxCandidates?: number;
 	/** Diagnostics: one line per finished worker request. */
 	debug?: (line: string) => void;
 }
@@ -85,23 +99,31 @@ export class RecoveryEngine {
 	async start(): Promise<void> {
 		this.timer = setInterval(() => this.emit(), SNAPSHOT_MS);
 		this.emit();
+		// What the worker supports, found out while the info dict loads.
+		const maxCandidates = this.opts.maxCandidates ?? fetchWorkerMaxCandidates(
+			this.opts.workerUrl ?? WORKER_API_URL,
+			AbortSignal.timeout(WORKER_INFO_TIMEOUT_MS),
+		);
 		try {
 			const meta = await this.retry("Fetching piece hashes", async () =>
-				parseInfoDict(await fetchInfoDict(this.opts.infoHash), this.opts.infoHash),
+				parseInfoDict(
+					await fetchInfoDict(this.opts.infoHash, AbortSignal.timeout(INFO_DICT_TIMEOUT_MS)),
+					this.opts.infoHash,
+				),
 			);
 			if (!meta || this.stopped) return;
 			if (meta.pieceLength > MAX_PIECE_LENGTH) throw new Error("Pieces larger than 64 MiB aren't supported");
 			this.meta = meta;
 			this.range = fileRange(meta, this.opts.file);
 
-			this.store = await openPieceStore(meta.infoHash);
+			this.store = this.opts.store ?? (await openPieceStore(meta.infoHash));
 			const stored = await this.store.list().catch(() => [] as number[]);
 
 			this.phase = "peers";
 			this.message = "Finding peers";
 			const workerUrl = this.opts.workerUrl ?? WORKER_API_URL;
 			this.swarm = new Swarm(
-				() => fetchSwarm(this.opts.magnet),
+				this.opts.fetchSwarm ?? (() => fetchSwarm(this.opts.magnet, AbortSignal.timeout(SWARM_TIMEOUT_MS))),
 				() => (this.availabilityAt = 0),
 			);
 			this.scheduler = new Scheduler({
@@ -113,7 +135,8 @@ export class RecoveryEngine {
 				// The scheduler scales up to this with the usable peers. Over plain
 				// HTTP (local dev) browsers allow ~6 connections per host; HTTPS
 				// multiplexes requests over one HTTP/2 connection.
-				maxActive: workerUrl.startsWith("https:") ? 24 : 5,
+				maxActive: this.opts.maxActive ?? (workerUrl.startsWith("https:") ? 24 : 5),
+				maxCandidates: await maxCandidates,
 				debug: this.opts.debug,
 			});
 			this.scheduler.markVerified(stored);

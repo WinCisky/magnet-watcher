@@ -17,6 +17,8 @@ const SINGLE_CONN_MS = 10 * 60_000;
 export const QUICK_UNCHOKE_MS = 2_500;
 /** Wins this recent say the peer's route and slots are warm. */
 const WARM_MS = 30_000;
+/** A peer may be a fallback candidate in this many open requests at once. */
+export const MAX_TENTATIVE = 2;
 
 export interface Peer {
 	addr: string;
@@ -37,6 +39,12 @@ export interface Peer {
 	active: number;
 	/** How many of those it may have at once. */
 	maxConns: number;
+	/** Open requests naming it as a fallback (no slot reserved). */
+	tentative: number;
+	/** When it last completed a handshake with the worker (ms). */
+	aliveAt: number;
+	/** Why it last failed (null once it served us). */
+	lastFailure: FailureReason | null;
 	/** Until then it gets one connection (it refused a parallel one). */
 	singleConnUntil: number;
 	/** Unchoke latency we observed (EWMA, ms), once it has served us. */
@@ -185,6 +193,48 @@ export class Swarm {
 		return out.sort((a, b) => scores.get(b)! - scores.get(a)!);
 	}
 
+	/**
+	 * Extra candidates for a request, in the order the worker should try
+	 * them after the lead: most may well be dead, since the worker works
+	 * through them 6 at a time and only the first to unchoke matters.
+	 * Peers known to be reachable first (idle, then busy, then resting,
+	 * soonest back first), then ones nobody could reach yet (magnet-seeders'
+	 * probe fails for most of a swarm, but some are reachable from
+	 * Cloudflare), and those that failed to connect for us last. Peers known
+	 * to lack `pieces[0]` or already named in MAX_TENTATIVE requests are
+	 * left out.
+	 */
+	fallbacks(pieces: number[], exclude: ReadonlySet<string>, n: number, quickFirst = false): Peer[] {
+		if (n <= 0) return [];
+		const now = this.now();
+		const tiers = new Map<Peer, number>();
+		for (const peer of this.peers.values()) {
+			if (exclude.has(peer.addr) || peer.banned || peer.tentative >= MAX_TENTATIVE) continue;
+			if (peer.tokenExp - TOKEN_MARGIN_S < now / 1000) continue;
+			if (peer.have && !this.hasPiece(peer, pieces[0])) continue;
+			const resting = peer.backoffUntil > now;
+			const unreachable = peer.lastFailure === "connect_failed" || peer.lastFailure === "connect_timeout";
+			const reachable = peer.probedOk || peer.aliveAt > 0 || peer.wins > 0;
+			let tier: number;
+			if (unreachable) tier = 4;
+			else if (!reachable) tier = 3;
+			else if (resting) tier = 2;
+			else tier = this.available(peer, now) ? 0 : 1;
+			tiers.set(peer, tier);
+		}
+		const scores = new Map([...tiers.keys()].map((p) => [p, score(p, now)]));
+		return [...tiers.keys()]
+			.sort(
+				(a, b) =>
+					tiers.get(a)! - tiers.get(b)! ||
+					(quickFirst ? Number(isQuickUnchoker(b)) - Number(isQuickUnchoker(a)) : 0) ||
+					(tiers.get(a) === 2 || tiers.get(a) === 4
+						? a.backoffUntil - b.backoffUntil
+						: scores.get(b)! - scores.get(a)!),
+			)
+			.slice(0, n);
+	}
+
 	/** Connections the peer may have open at once right now. */
 	connLimit(peer: Peer, now = this.now()): number {
 		return peer.singleConnUntil > now ? 1 : peer.maxConns;
@@ -232,6 +282,19 @@ export class Swarm {
 
 	release(peer: Peer): void {
 		if (peer.active > 0) peer.active--;
+	}
+
+	/**
+	 * The worker completed a handshake with it (it lost the race, or was
+	 * still choked): it's reachable, whatever magnet-seeders' probe said.
+	 */
+	noteAlive(peer: Peer): void {
+		peer.aliveAt = this.now();
+		if (peer.lastFailure === "connect_failed" || peer.lastFailure === "connect_timeout") {
+			peer.backoffUntil = Math.min(peer.backoffUntil, this.now());
+			peer.consecutiveFailures = 0;
+			peer.lastFailure = null;
+		}
 	}
 
 	/** Unchoke latency the worker measured for a peer that won a race. */
@@ -286,6 +349,7 @@ export class Swarm {
 	won(peer: Peer, bytes: number, ms: number): void {
 		peer.wins++;
 		peer.consecutiveFailures = 0;
+		peer.lastFailure = null;
 		peer.lastWinAt = this.now();
 		if (bytes > 0 && ms > 0) {
 			const rate = (bytes * 1000) / ms;
@@ -302,7 +366,10 @@ export class Swarm {
 	 * we had another connection open to it when this one failed.
 	 */
 	failed(peer: Peer, reason: FailureReason, concurrent = false): void {
-		if (reason === "lost") return;
+		// Lost the race, or never got a turn: nothing learned.
+		if (reason === "lost" || reason === "untried") return;
+		// Still choked when its slot went to the next candidate: like a choke.
+		if (reason === "evicted") reason = "choked";
 		if (reason === "closed" && concurrent) {
 			// It refused a parallel connection (many clients allow one per IP,
 			// and Cloudflare may reuse an egress IP). Not a failure: just keep
@@ -321,6 +388,7 @@ export class Swarm {
 		}
 		peer.failures++;
 		peer.consecutiveFailures++;
+		peer.lastFailure = reason;
 		// Unreachable is likely to last (unless magnet-seeders could reach it:
 		// then it's probably a blip); the rest is usually transient. A peer
 		// hanging up right after serving us is most likely still tearing down
@@ -396,6 +464,7 @@ export function score(peer: Peer, now = Date.now()): number {
 	if (peer.rate > 0) s += Math.log2(1 + peer.rate / 65_536) * 1.25;
 	else if (peer.wins === 0) s += 0.5; // untried: worth exploring
 	if (now - peer.lastWinAt < WARM_MS) s += 0.5;
+	else if (!peer.probedOk && peer.aliveAt > 0) s += 1; // reachable after all
 	if (peer.rttMs !== null) s -= Math.min(peer.rttMs, 1000) / 1000;
 	s -= peer.consecutiveFailures * 1.5;
 	s -= peer.active * 2;
@@ -416,6 +485,9 @@ function fromSnapshot(p: SwarmPeer, tokenExp: number): Peer {
 		client: p.client ?? null,
 		active: 0,
 		maxConns: 1,
+		tentative: 0,
+		aliveAt: 0,
+		lastFailure: null,
 		singleConnUntil: 0,
 		unchokeEwma: null,
 		wins: 0,

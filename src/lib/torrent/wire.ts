@@ -11,7 +11,8 @@ export interface Preamble {
 	sent: string;
 	blocks: number;
 	ms: { connect: number; handshake: number; unchoke: number };
-	others: { peer: string; err?: string }[];
+	/** How the other candidates fared; `hs`: it completed a handshake. */
+	others: { peer: string; err?: string; hs?: number }[];
 }
 
 export interface StreamEvents {

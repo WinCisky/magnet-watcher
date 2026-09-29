@@ -2,7 +2,7 @@
 //
 // Priority: the file's first pieces (container header), its last pieces
 // (MP4 `moov`, MKV cues), then everything from the cursor to the end, then
-// the rest. `setCursor` moves that sequential front (seeking, later).
+// the rest. `setCursor` moves that sequential front (seeking).
 //
 // Every worker request pays for a connection, handshake and unchoke
 // (0.2–1 s), so batches are contiguous runs of blocks sized to the peer's
@@ -10,8 +10,13 @@
 // the front (the first missing piece from the cursor, where playback would
 // stall) are "urgent": they go to peers that unchoke quickly, raced unless
 // the peer has already proven itself, and get a duplicate request ("hedge")
-// if they stall. Peers that serve us fast get parallel connections;
-// batches that crawl have their blocks handed to someone else ("stealing").
+// if they stall. Until a few MiB are in from the cursor (start, seeks),
+// only a few small requests run, so the front isn't sharing the link with
+// readahead; a seek also cancels requests far from the new cursor. Peers
+// that serve us fast get parallel connections; batches that crawl have
+// their blocks handed to someone else ("stealing"). With a worker that
+// takes long candidate lists, each request names a lead plus fallbacks, so
+// a dead or choking lead costs no round trip.
 // Every piece is SHA-1-checked here: the worker never verifies anything.
 
 import type { BatchEnd, BatchPlan, BatchSink, Transport } from "./batch";
@@ -52,6 +57,22 @@ const URGENT_WAIT_MS = 3_500;
 const READAHEAD_WAIT_MS = 8_000;
 /** Peers that unchoke on a timer (Transmission: every 10 s) need longer. */
 const SLOW_UNCHOKE_WAIT_MS = 14_000;
+/** Open pieces one planning pass may look at before giving up. */
+const MAX_SCAN_PIECES = 512;
+/**
+ * Until this much is verified from the cursor on (start, seeks), at most
+ * FRONT_ACTIVE requests run, so the front isn't starved of bandwidth.
+ */
+const FRONT_READY_BYTES = 4 * 1024 * 1024;
+const FRONT_ACTIVE = 6;
+/** Urgent batches meanwhile: 1 MiB. */
+const FRONT_BATCH_BLOCKS = 64;
+/**
+ * And within the first MiB after the front: 256 KiB, so several peers
+ * deliver it in parallel (a new connection starts slowly: ~0.6 MB/s).
+ */
+const FRONT_FIRST_BYTES = 1024 * 1024;
+const FRONT_FIRST_BLOCKS = 16;
 /** Parallel requests: twice the usable peers, within these bounds. */
 const MIN_ACTIVE = 6;
 /** Memory held by pieces being assembled; no new batches beyond it. */
@@ -77,6 +98,24 @@ const URGENT_STEAL_MIN_PROJECTED_MS = 3_000;
 const STEAL_FACTOR = 4;
 /** Unchoked, requests sent, not a byte after this long: steal (urgent only). */
 const URGENT_SILENT_MS = 3_000;
+/**
+ * With a worker that takes long candidate lists: fallbacks after the lead
+ * (most may be dead; the worker tries 6 at a time), and how long a choked
+ * one may keep a connection slot while others wait.
+ */
+const URGENT_FALLBACKS = 12;
+const READAHEAD_FALLBACKS = 8;
+const URGENT_HOLD_MS = 2_000;
+const READAHEAD_HOLD_MS = 4_000;
+/**
+ * A quick lead gets this head start before the fallbacks join in:
+ * otherwise whichever fallback unchokes first wins, however slowly it then
+ * uploads. A proven lead normally unchokes within ~0.5 s.
+ */
+const PROVEN_STAGGER_MS = 1_200;
+const QUICK_STAGGER_MS = 800;
+/** What a worker that doesn't say otherwise accepts. */
+export const LEGACY_MAX_CANDIDATES = 3;
 
 interface PieceWork {
 	buffer: Uint8Array;
@@ -95,6 +134,8 @@ interface ActiveBatch {
 	startedAt: number;
 	/** When the worker's answer (a peer unchoked) arrived. */
 	unchokedAt: number;
+	/** How long the winner took to unchoke, per the worker (diagnostics). */
+	unchokeMs: number;
 	firstDataAt: number;
 	lastDataAt: number;
 	winner: Peer | null;
@@ -104,6 +145,8 @@ interface ActiveBatch {
 	hedge: boolean;
 	/** Peers whose connection slot this batch holds. */
 	holding: Set<Peer>;
+	/** Fallback candidates still counted as tentative for this batch. */
+	tentative: Set<Peer>;
 	/** Aborted by us for crawling; its blocks went to other peers. */
 	slow: boolean;
 }
@@ -118,6 +161,8 @@ export interface SchedulerOptions {
 	maxActive: number;
 	/** Memory cap for pieces being assembled (default MAX_INFLIGHT_BYTES). */
 	maxInflightBytes?: number;
+	/** Candidates per request the worker accepts (default: 3, no fallbacks). */
+	maxCandidates?: number;
 	onVerified?: (piece: number) => void;
 	/** Diagnostics: one line per finished request. */
 	debug?: (line: string) => void;
@@ -215,9 +260,23 @@ export class Scheduler {
 		this.rateSampleBytes = this.bytesReceived;
 	}
 
+	/** Room for fallback candidates in each request (0 with an old worker). */
+	private get fallbackRoom(): number {
+		const max = this.opts.maxCandidates ?? LEGACY_MAX_CANDIDATES;
+		return max > LEGACY_MAX_CANDIDATES ? max - 1 : 0;
+	}
+
 	/** Parallel requests allowed now: scales with the usable peers. */
 	get concurrency(): number {
-		return Math.min(this.opts.maxActive, Math.max(MIN_ACTIVE, 2 * this.opts.swarm.usableCount()));
+		const full = Math.min(this.opts.maxActive, Math.max(MIN_ACTIVE, 2 * this.opts.swarm.usableCount()));
+		// Parallel requests share our link evenly: at the start and after a
+		// seek, a few requests for the front beat twenty for everything.
+		return this.frontReady ? full : Math.min(full, FRONT_ACTIVE);
+	}
+
+	/** Enough is verified from the cursor on for playback to start. */
+	get frontReady(): boolean {
+		return this.front > this.last || (this.front - this.cursor) * this.meta.pieceLength >= FRONT_READY_BYTES;
 	}
 
 	start(): void {
@@ -251,9 +310,23 @@ export class Scheduler {
 
 	/** Move the sequential front (e.g. to where the viewer seeks). */
 	setCursor(piece: number): void {
-		this.cursor = Math.min(this.last, Math.max(this.first, piece));
+		const cursor = Math.min(this.last, Math.max(this.first, piece));
+		if (cursor === this.cursor) return;
+		this.cursor = cursor;
 		this.front = this.cursor;
 		this.advanceFront();
+		// Requests for the region we left would keep the slots, bandwidth
+		// and memory budget the new front needs: cancel them, and drop their
+		// half-received pieces (the order comes back to them much later).
+		const near = (p: number) => this.isUrgent(p) || (p >= this.front && p < this.front + 2 * this.urgentPieces);
+		for (const batch of [...this.active]) {
+			if (batch.hedge || [...batch.outstanding].some((k) => near(Math.floor(k / 4096)))) continue;
+			batch.controller.abort();
+			for (const k of [...batch.outstanding]) this.release(batch, k);
+		}
+		for (const [p, w] of [...this.work]) {
+			if (!near(p) && !this.verifying.has(p) && w.inflight.every((n) => n === 0)) this.dropWork(p);
+		}
 		this.tick();
 	}
 
@@ -339,10 +412,18 @@ export class Scheduler {
 	private nextPlan(limit: number, room: number): Omit<BatchPlan, "id"> | null {
 		const swarm = this.opts.swarm;
 		if (!swarm.hasIdlePeer()) return null;
+		let scanned = 0;
 		for (const piece of this.order()) {
 			if (!this.isOpen(piece)) continue;
 			const free = this.freeBlocks(piece);
 			if (free.length === 0) continue;
+			const urgent = this.isUrgent(piece);
+			// Urgent pieces come first in the order: past them, a full budget
+			// means nothing more to launch.
+			if (!urgent && room < MIN_BATCH_BLOCKS) return null;
+			// Big files have tens of thousands of pieces: nobody free holds
+			// the next ones? Wait for someone rather than scan the whole file.
+			if (++scanned > MAX_SCAN_PIECES) return null;
 
 			let peers = swarm.candidates([piece]);
 			if (peers.length === 0) {
@@ -361,8 +442,6 @@ export class Scheduler {
 			// leave enough idle peers for the other free slots.
 			const slots = Math.max(1, limit - this.active.size);
 			const share = Math.max(1, Math.floor(peers.length / slots));
-			const urgent = this.isUrgent(piece);
-			if (!urgent && room < MIN_BATCH_BLOCKS) continue;
 
 			if (urgent) {
 				// Near the cursor, only peers that unchoke within seconds: wait
@@ -373,21 +452,31 @@ export class Scheduler {
 				else if (swarm.holderFreeSoon(piece, 10_000, true)) continue;
 			}
 			const lead = peers[0];
-			const budget = urgent ? this.urgentBudget(lead) : Math.min(this.batchBudget(lead), room);
+			const budget = urgent ? this.urgentBudget(lead, piece) : Math.min(this.batchBudget(lead), room);
 			const blocks = this.run(piece, free, lead, budget, urgent);
 			const pieces = [...new Set(blocks.map(([p]) => p))];
 			const others = peers.slice(1).filter((p) => pieces.every((pc) => swarm.hasPiece(p, pc, true)));
 
+			const waitMs = isQuickUnchoker(lead) ? (urgent ? URGENT_WAIT_MS : READAHEAD_WAIT_MS) : SLOW_UNCHOKE_WAIT_MS;
+			if (this.fallbackRoom > 0) {
+				// The lead alone holds a slot; the worker falls back on a long
+				// list, so a dead or choking lead costs no round trip.
+				const n = Math.min(this.fallbackRoom, urgent ? URGENT_FALLBACKS : READAHEAD_FALLBACKS);
+				return {
+					blocks,
+					peers: [lead],
+					fallbacks: swarm.fallbacks(pieces, new Set([lead.addr]), n, urgent),
+					urgent,
+					waitMs,
+					holdMs: this.holdFor(lead, urgent, waitMs),
+					staggerMs: this.staggerFor(lead),
+				};
+			}
 			// A proven peer goes alone; otherwise race a second one when there
 			// are peers to spare, or always for the front piece itself (start
 			// and seeks), so one dud doesn't cost a whole round trip.
 			const raced = !isProven(lead) && others.length > 0 && (share >= 2 || piece === this.front);
-			return {
-				blocks,
-				peers: raced ? [lead, others[0]] : [lead],
-				urgent,
-				waitMs: isQuickUnchoker(lead) ? (urgent ? URGENT_WAIT_MS : READAHEAD_WAIT_MS) : SLOW_UNCHOKE_WAIT_MS,
-			};
+			return { blocks, peers: raced ? [lead, others[0]] : [lead], fallbacks: [], urgent, waitMs, holdMs: waitMs, staggerMs: 0 };
 		}
 		return null;
 	}
@@ -409,8 +498,24 @@ export class Scheduler {
 		return blocks;
 	}
 
-	private urgentBudget(peer: Peer): number {
-		const cap = Math.min(peer.reqq ?? 250, URGENT_MAX_BLOCKS);
+	/** A slow-unchoking lead needs its whole wait; others give way sooner. */
+	private holdFor(lead: Peer, urgent: boolean, waitMs: number): number {
+		if (!isQuickUnchoker(lead)) return waitMs;
+		return Math.min(waitMs, urgent ? URGENT_HOLD_MS : READAHEAD_HOLD_MS);
+	}
+
+	/** A slow-unchoking lead gets no head start: a quick fallback should win. */
+	private staggerFor(lead: Peer): number {
+		if (!isQuickUnchoker(lead)) return 0;
+		return isProven(lead) ? PROVEN_STAGGER_MS : QUICK_STAGGER_MS;
+	}
+
+	private urgentBudget(peer: Peer, piece: number): number {
+		// Until playback could start, stripe the front over several peers
+		// (each uploads at its own pace) rather than wait on one.
+		const nearFront = piece >= this.front && (piece - this.front) * this.meta.pieceLength < FRONT_FIRST_BYTES;
+		const max = this.frontReady ? URGENT_MAX_BLOCKS : nearFront ? FRONT_FIRST_BLOCKS : FRONT_BATCH_BLOCKS;
+		const cap = Math.min(peer.reqq ?? 250, max);
 		if (peer.rate <= 0) return Math.min(URGENT_UNTRIED_BLOCKS, cap);
 		const byRate = Math.round((peer.rate * URGENT_TARGET_SECONDS) / BLOCK_SIZE);
 		return Math.max(Math.min(URGENT_MIN_BLOCKS, cap), Math.min(byRate, cap));
@@ -460,12 +565,21 @@ export class Scheduler {
 			if (peers.length === 0) continue;
 			const quick = peers.filter(isQuickUnchoker);
 			const pool = quick.length > 0 ? quick : peers;
+			const waitMs = isQuickUnchoker(pool[0]) ? URGENT_WAIT_MS : SLOW_UNCHOKE_WAIT_MS;
+			const blocks = missing.slice(0, HEDGE_BATCH_BLOCKS).map((b): [number, number] => [piece, b]);
+			const fanOut = this.fallbackRoom > 0;
 			this.launch(
 				{
-					blocks: missing.slice(0, HEDGE_BATCH_BLOCKS).map((b) => [piece, b]),
-					peers: pool.slice(0, isProven(pool[0]) ? 1 : 2),
+					blocks,
+					peers: pool.slice(0, fanOut || isProven(pool[0]) ? 1 : 2),
+					fallbacks: fanOut
+						? this.opts.swarm.fallbacks([piece], new Set([...exclude, pool[0].addr]), Math.min(this.fallbackRoom, URGENT_FALLBACKS), true)
+						: [],
 					urgent: true,
-					waitMs: isQuickUnchoker(pool[0]) ? URGENT_WAIT_MS : SLOW_UNCHOKE_WAIT_MS,
+					waitMs,
+					holdMs: fanOut ? this.holdFor(pool[0], true, waitMs) : waitMs,
+					// A hedge is already late: everyone at once.
+					staggerMs: 0,
 				},
 				true,
 			);
@@ -550,6 +664,7 @@ export class Scheduler {
 			controller: new AbortController(),
 			startedAt: Date.now(),
 			unchokedAt: 0,
+			unchokeMs: 0,
 			firstDataAt: 0,
 			lastDataAt: Date.now(),
 			winner: null,
@@ -557,6 +672,7 @@ export class Scheduler {
 			bytes: 0,
 			hedge,
 			holding: new Set(plan.peers),
+			tentative: new Set(plan.fallbacks),
 			slow: false,
 		};
 		for (const [piece, block] of plan.blocks) {
@@ -569,6 +685,7 @@ export class Scheduler {
 			set.add(batch);
 		}
 		for (const peer of plan.peers) this.opts.swarm.acquire(peer);
+		for (const peer of plan.fallbacks) peer.tentative++;
 		this.active.add(batch);
 		this.requests++;
 		this.opts
@@ -581,13 +698,20 @@ export class Scheduler {
 		const swarm = this.opts.swarm;
 		return {
 			started: (preamble, sent) => {
-				batch.winner = batch.plan.peers.find((p) => p.addr === preamble.peer) ?? null;
+				batch.winner =
+					batch.plan.peers.find((p) => p.addr === preamble.peer) ??
+					batch.plan.fallbacks.find((p) => p.addr === preamble.peer) ??
+					null;
 				batch.unchokedAt = Date.now();
+				batch.unchokeMs = preamble.ms.unchoke;
 				for (const peer of batch.plan.peers) if (peer !== batch.winner) this.releasePeer(batch, peer);
-				for (const other of preamble.others) {
-					const peer = swarm.peers.get(other.peer);
-					if (peer && other.err) swarm.failed(peer, other.err, peer.active > 0);
+				this.releaseTentative(batch);
+				// A fallback won: it's transferring for us now.
+				if (batch.winner && !batch.holding.has(batch.winner)) {
+					swarm.acquire(batch.winner);
+					batch.holding.add(batch.winner);
 				}
+				this.learn(preamble.others);
 				if (batch.winner) {
 					if (preamble.reqq) batch.winner.reqq = preamble.reqq;
 					swarm.noteUnchoke(batch.winner, preamble.ms.unchoke - preamble.ms.handshake);
@@ -611,6 +735,22 @@ export class Scheduler {
 				if (batch.winner) swarm.noteHave(batch.winner.addr, piece, this.meta.pieceCount);
 			},
 		};
+	}
+
+	private releaseTentative(batch: ActiveBatch): void {
+		for (const peer of batch.tentative) if (peer.tentative > 0) peer.tentative--;
+		batch.tentative.clear();
+	}
+
+	/** What the worker found out about the candidates that didn't win. */
+	private learn(others: { peer: string; err?: string; hs?: number }[]): void {
+		const swarm = this.opts.swarm;
+		for (const other of others) {
+			const peer = swarm.peers.get(other.peer);
+			if (!peer) continue;
+			if (other.hs) swarm.noteAlive(peer);
+			swarm.failed(peer, other.err ?? "error", peer.active > 0);
+		}
 	}
 
 	private releasePeer(batch: ActiveBatch, peer: Peer): void {
@@ -690,13 +830,16 @@ export class Scheduler {
 	private finish(batch: ActiveBatch, end: BatchEnd): void {
 		this.active.delete(batch);
 		for (const peer of [...batch.holding]) this.releasePeer(batch, peer);
+		this.releaseTentative(batch);
 		if (this.opts.debug) {
 			const pieces = [...new Set(batch.plan.blocks.map(([p]) => p))];
 			const detail = end.kind === "no_peer" ? ` ${end.others.map((o) => `${o.peer}:${o.err}`).join(" ")}` : "";
 			this.opts.debug(
 				`#${batch.plan.id} ${end.kind} after ${Date.now() - batch.startedAt}ms, ${end.bytes} B, ` +
 					`winner ${batch.winner?.addr ?? "-"}, pieces ${pieces[0]}..${pieces[pieces.length - 1]} (${batch.plan.blocks.length} blocks), ` +
-					`candidates ${batch.plan.peers.length}, wait ${batch.plan.waitMs}ms` +
+					`candidates ${batch.plan.peers.length}+${batch.plan.fallbacks.length}, wait ${batch.plan.waitMs}ms` +
+					`${batch.winner ? `, unchoked at ${batch.unchokeMs}ms` : ""}` +
+					`${batch.winner && !batch.plan.peers.includes(batch.winner) ? " (fallback won)" : ""}` +
 					`${batch.winner ? `, ${batch.winner.active} other conns to it` : ""}${batch.slow ? " (slow: stolen)" : ""}` +
 					`${batch.hedge ? " (hedge)" : ""}${"message" in end ? ` ${end.message}` : ""}${detail}`,
 			);
@@ -744,10 +887,7 @@ export class Scheduler {
 				if (winner) swarm.failed(winner, "stalled");
 				break;
 			case "no_peer":
-				for (const other of end.others) {
-					const peer = swarm.peers.get(other.peer);
-					if (peer) swarm.failed(peer, other.err ?? "error", peer.active > 0);
-				}
+				this.learn(end.others);
 				break;
 			case "refused":
 				if (end.status === 403) swarm.refreshSoon(); // tokens expired

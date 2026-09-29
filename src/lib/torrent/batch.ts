@@ -1,5 +1,5 @@
-// One magnet-worker request ("batch"): ask for some blocks from 1–3
-// candidate peers, stream the answer through the parser, and hang up as
+// One magnet-worker request ("batch"): ask for some blocks from a list of
+// candidate peers (the worker tries them 6 at a time, first unchoke wins), stream the answer through the parser, and hang up as
 // soon as the blocks are in (the worker then closes the peer connection).
 
 import { blockCount, type Metainfo } from "./metainfo";
@@ -13,10 +13,20 @@ export interface BatchPlan {
 	id: number;
 	/** [piece, block] pairs in request order. */
 	blocks: Array<[number, number]>;
+	/** Candidates whose connection slot the request holds (lead, race). */
 	peers: Peer[];
+	/**
+	 * More candidates for the worker to try after `peers`, 6 connections at
+	 * a time (a v2 worker; most may be dead). No slot is reserved for them.
+	 */
+	fallbacks: Peer[];
 	urgent: boolean;
 	/** How long the worker may wait for an unchoke. */
 	waitMs: number;
+	/** How long a handshaken but choked candidate may keep its slot while others wait. */
+	holdMs: number;
+	/** How long the lead is tried alone before the fallbacks join in. */
+	staggerMs: number;
 }
 
 export interface BatchSink {
@@ -39,7 +49,7 @@ export type BatchEnd = { bytes: number } & (
 	| { kind: "ended" }
 	| { kind: "aborted" }
 	/** Every candidate failed; reasons per peer. */
-	| { kind: "no_peer"; others: { peer: string; err?: string }[] }
+	| { kind: "no_peer"; others: { peer: string; err?: string; hs?: number }[] }
 	/** The worker refused the request (bad token, bad input). */
 	| { kind: "refused"; status: number }
 	/** Network or worker failure (including Cloudflare limit errors). */
@@ -57,7 +67,13 @@ export function workerTransport(workerUrl: string, meta: Metainfo): Transport {
 		url.searchParams.set("len", String(meta.totalLength));
 		url.searchParams.set("want", formatSpec(plan.blocks, blocksIn));
 		url.searchParams.set("wait", String(plan.waitMs));
-		for (const peer of plan.peers) url.searchParams.append("c", `${peer.addr}|${peer.tokenExp}|${peer.token}`);
+		for (const peer of [...plan.peers, ...plan.fallbacks]) {
+			url.searchParams.append("c", `${peer.addr}|${peer.tokenExp}|${peer.token}`);
+		}
+		if (plan.fallbacks.length > 0) {
+			url.searchParams.set("hold", String(plan.holdMs));
+			if (plan.staggerMs > 0) url.searchParams.set("stagger", String(plan.staggerMs));
+		}
 
 		const controller = new AbortController();
 		const abort = () => controller.abort();
@@ -84,7 +100,7 @@ export function workerTransport(workerUrl: string, meta: Metainfo): Transport {
 				clearTimeout(headersTimer);
 			}
 			if (res.status === 502) {
-				const body = (await res.json().catch(() => ({}))) as { others?: { peer: string; err?: string }[] };
+				const body = (await res.json().catch(() => ({}))) as { others?: { peer: string; err?: string; hs?: number }[] };
 				return { kind: "no_peer", others: body.others ?? [], bytes };
 			}
 			if (res.status >= 400 && res.status < 500) return { kind: "refused", status: res.status, bytes };

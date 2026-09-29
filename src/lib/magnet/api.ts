@@ -127,3 +127,18 @@ export function warmUpSwarm(magnetUri: string, infoHash: string): void {
 	fetchSwarm(magnetUri).catch(() => {});
 	fetchInfoDict(infoHash).catch(() => {});
 }
+
+/**
+ * How many candidate peers one magnet-worker request may name. Workers
+ * before `/v1/info` existed take 3 (and a failure here means the same).
+ */
+export async function fetchWorkerMaxCandidates(workerUrl: string, signal?: AbortSignal): Promise<number> {
+	try {
+		const res = await fetch(new URL("/v1/info", workerUrl), { signal, cache: "no-store" });
+		if (!res.ok) return 3;
+		const info = (await res.json()) as { maxCandidates?: unknown };
+		return typeof info.maxCandidates === "number" && info.maxCandidates >= 1 ? info.maxCandidates : 3;
+	} catch {
+		return 3;
+	}
+}

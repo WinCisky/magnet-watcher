@@ -16,11 +16,21 @@ movable front) so it can back streaming and seeking later.
     info-hash, and it holds every piece's hash.
 - **[magnet-worker](https://github.com/WinCisky/magnet-worker)** (Cloudflare
   Worker) does what the browser can't: it opens TCP connections to peers. The
-  page asks it for blocks from 1–3 candidate peers, and it streams back
-  whatever the fastest one sends, unverified.
+  page asks it for blocks from a lead peer plus up to a dozen fallbacks (most
+  of a swarm is usually unreachable). The worker tries them 6 connections at
+  a time, gives the lead a head start, and streams back whatever the first
+  to unchoke sends, unverified. With an older worker (no `/v1/info`), the
+  page names 1–3 peers instead.
 - The engine in `src/lib/torrent/` schedules the requests, assembles the
   pieces, and checks each piece's SHA-1. How it schedules:
-  - Requests run in parallel: up to 24 at once, fewer on a slow connection.
+  - At the start and after a seek, at most 6 requests run until 4 MiB are
+    verified from the playback position: the first MiB in 256 KiB batches
+    and the rest in 1 MiB batches, each from a different peer. A new
+    connection starts slowly, and parallel requests share the link evenly,
+    so this gets the first chunks in sooner.
+  - Then requests run in parallel: up to 24 at once, fewer on a slow
+    connection.
+  - A seek cancels requests far from the new position.
   - Each request is a run of blocks sized to the peer's measured speed,
     because every request pays ~0.2–1 s of setup.
   - Near the playback front, it uses only peers that unchoke quickly.
@@ -53,5 +63,7 @@ To see every worker request in the browser console, run
 | `npm test` | Unit tests for the recovery engine (vitest) |
 | `npx astro check` | Type-check |
 
-`src/lib/torrent/live.test.ts` runs the real engine against running services
-and real peers. It's skipped unless `MW_LIVE=1`; see the file's header.
+`src/lib/torrent/live.test.ts` benchmarks the real engine against running
+services and real peers: time to the first 1/4/16 MiB, throughput per 10 s,
+and four seeks per torrent, over the legal video and Linux ISO swarms in
+`live-torrents.json`. It's skipped unless `MW_LIVE=1`; see the file's header.

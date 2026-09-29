@@ -1,0 +1,74 @@
+[
+	{
+		"name": "Sintel",
+		"kind": "video",
+		"hash": "08ada5a7a6183aae1e09d831df6748d566095a10",
+		"magnet": "magnet:?xt=urn:btih:08ada5a7a6183aae1e09d831df6748d566095a10&dn=Sintel&tr=udp%3A%2F%2Ftracker.opentrackr.org%3A1337&tr=udp%3A%2F%2Fopen.demonii.com%3A1337&tr=udp%3A%2F%2Ftracker.torrent.eu.org%3A451",
+		"path": "Sintel.mp4",
+		"offset": 7884,
+		"size": 129241752
+	},
+	{
+		"name": "Big Buck Bunny",
+		"kind": "video",
+		"hash": "dd8255ecdc7ca55fb0bbf81323d87062db1f6d1c",
+		"magnet": "magnet:?xt=urn:btih:dd8255ecdc7ca55fb0bbf81323d87062db1f6d1c&dn=Big%20Buck%20Bunny&tr=udp%3A%2F%2Ftracker.opentrackr.org%3A1337&tr=udp%3A%2F%2Fopen.demonii.com%3A1337&tr=udp%3A%2F%2Ftracker.torrent.eu.org%3A451",
+		"path": "Big Buck Bunny.mp4",
+		"offset": 140,
+		"size": 276134947
+	},
+	{
+		"name": "Tears of Steel",
+		"kind": "video",
+		"hash": "209c8226b299b308beaf2b9cd3fb49212dbd13ec",
+		"magnet": "magnet:?xt=urn:btih:209c8226b299b308beaf2b9cd3fb49212dbd13ec&dn=Tears%20of%20Steel&tr=udp%3A%2F%2Ftracker.opentrackr.org%3A1337&tr=udp%3A%2F%2Fopen.demonii.com%3A1337&tr=udp%3A%2F%2Ftracker.torrent.eu.org%3A451",
+		"path": "Tears of Steel.webm",
+		"offset": 43935,
+		"size": 571346576
+	},
+	{
+		"name": "ubuntu-24.04.5-live-server-amd64.iso",
+		"kind": "iso",
+		"hash": "a3b4136a174e30b121a6bb6ab75b577ea7eda5f3",
+		"magnet": "magnet:?xt=urn:btih:a3b4136a174e30b121a6bb6ab75b577ea7eda5f3&dn=ubuntu-24.04.5-live-server-amd64.iso&tr=https%3A%2F%2Ftorrent.ubuntu.com%2Fannounce&tr=https%3A%2F%2Fipv6.torrent.ubuntu.com%2Fannounce&tr=udp%3A%2F%2Ftracker.opentrackr.org%3A1337&tr=udp%3A%2F%2Fopen.demonii.com%3A1337&tr=udp%3A%2F%2Ftracker.torrent.eu.org%3A451",
+		"path": "ubuntu-24.04.5-live-server-amd64.iso",
+		"offset": 0,
+		"size": 4080486400
+	},
+	{
+		"name": "ubuntu-24.04.5.1-desktop-amd64.iso",
+		"kind": "iso",
+		"hash": "43519d14444904f6015e1a0d92018068fb0a49fa",
+		"magnet": "magnet:?xt=urn:btih:43519d14444904f6015e1a0d92018068fb0a49fa&dn=ubuntu-24.04.5.1-desktop-amd64.iso&tr=https%3A%2F%2Ftorrent.ubuntu.com%2Fannounce&tr=https%3A%2F%2Fipv6.torrent.ubuntu.com%2Fannounce&tr=udp%3A%2F%2Ftracker.opentrackr.org%3A1337&tr=udp%3A%2F%2Fopen.demonii.com%3A1337&tr=udp%3A%2F%2Ftracker.torrent.eu.org%3A451",
+		"path": "ubuntu-24.04.5.1-desktop-amd64.iso",
+		"offset": 0,
+		"size": 6250332160
+	},
+	{
+		"name": "debian-live-13.7.0-amd64-xfce.iso",
+		"kind": "iso",
+		"hash": "8b3b328db6514130fe3401f029b4076837eedb13",
+		"magnet": "magnet:?xt=urn:btih:8b3b328db6514130fe3401f029b4076837eedb13&dn=debian-live-13.7.0-amd64-xfce.iso&tr=http%3A%2F%2Fbttracker.debian.org%3A6969%2Fannounce&tr=udp%3A%2F%2Ftracker.opentrackr.org%3A1337&tr=udp%3A%2F%2Fopen.demonii.com%3A1337&tr=udp%3A%2F%2Ftracker.torrent.eu.org%3A451",
+		"path": "debian-live-13.7.0-amd64-xfce.iso",
+		"offset": 0,
+		"size": 3826974720
+	},
+	{
+		"name": "debian-live-13.7.0-amd64-kde.iso",
+		"kind": "iso",
+		"hash": "b3c432c4c2c85a0c41659a4cc2f165703fcc53fe",
+		"magnet": "magnet:?xt=urn:btih:b3c432c4c2c85a0c41659a4cc2f165703fcc53fe&dn=debian-live-13.7.0-amd64-kde.iso&tr=http%3A%2F%2Fbttracker.debian.org%3A6969%2Fannounce&tr=udp%3A%2F%2Ftracker.opentrackr.org%3A1337&tr=udp%3A%2F%2Fopen.demonii.com%3A1337&tr=udp%3A%2F%2Ftracker.torrent.eu.org%3A451",
+		"path": "debian-live-13.7.0-amd64-kde.iso",
+		"offset": 0,
+		"size": 4186112000
+	},
+	{
+		"name": "debian-live-13.7.0-amd64-gnome.iso",
+		"kind": "iso",
+		"hash": "0697aa4c78e1237966925f250c2189eac36020f2",
+		"magnet": "magnet:?xt=urn:btih:0697aa4c78e1237966925f250c2189eac36020f2&dn=debian-live-13.7.0-amd64-gnome.iso&tr=http%3A%2F%2Fbttracker.debian.org%3A6969%2Fannounce&tr=udp%3A%2F%2Ftracker.opentrackr.org%3A1337&tr=udp%3A%2F%2Fopen.demonii.com%3A1337&tr=udp%3A%2F%2Ftracker.torrent.eu.org%3A451",
+		"path": "debian-live-13.7.0-amd64-gnome.iso",
+		"offset": 0,
+		"size": 3804708864
+	}
+]

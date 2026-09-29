@@ -117,4 +117,42 @@ describe("Swarm", () => {
 		expect(t.maxConns).toBe(1);
 		expect(t.backoffUntil).toBe(now + 4 * 60_000);
 	});
+
+	it("lists fallbacks idle first, the unreachable last, and never learns from `untried`", async () => {
+		let now = 1_000_000;
+		const peers = ["1.1.1.1:1", "2.2.2.2:2", "3.3.3.3:3", "4.4.4.4:4", "5.5.5.5:5"].map((addr) => ({ ...seed, addr }));
+		const stranger = { addr: "6.6.6.6:6", ok: false, seed: false, fast: false, t: "tok-f" };
+		const swarm = new Swarm(async () => snapshot([...peers, partial, stranger]), () => {}, () => now);
+		await swarm.refresh();
+		const [a, b, c, d, e] = peers.map((p) => swarm.peers.get(p.addr)!);
+		swarm.failed(b, "connect_timeout"); // unreachable: last
+		swarm.failed(c, "choked"); // resting: after the idle ones
+		swarm.acquire(d); // busy: after the idle ones, before the resting
+		const order = swarm.fallbacks([1], new Set([a.addr]), 10).map((p) => p.addr);
+		// The partial peer lacks piece 1; the probe couldn't reach the stranger.
+		expect(order).toEqual([e.addr, d.addr, c.addr, stranger.addr, b.addr]);
+		expect(swarm.fallbacks([1], new Set(), 2)).toHaveLength(2);
+
+		// Named in two open requests already: left out.
+		e.tentative = 2;
+		expect(swarm.fallbacks([1], new Set(), 10).map((p) => p.addr)).not.toContain(e.addr);
+
+		const before = a.backoffUntil;
+		swarm.failed(a, "untried");
+		swarm.failed(a, "lost");
+		expect(a.backoffUntil).toBe(before);
+		expect(a.consecutiveFailures).toBe(0);
+		// Evicted while choked: rests like a choke.
+		swarm.failed(a, "evicted");
+		expect(a.backoffUntil).toBe(now + 45_000);
+
+		// The worker handshook with a peer we had marked unreachable: it's back.
+		now += 1_000;
+		swarm.noteAlive(b);
+		expect(b.backoffUntil).toBeLessThanOrEqual(now);
+		expect(b.consecutiveFailures).toBe(0);
+		// But not a choking one: that's still a choke.
+		swarm.noteAlive(c);
+		expect(c.backoffUntil).toBeGreaterThan(now);
+	});
 });

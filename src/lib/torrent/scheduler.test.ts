@@ -24,6 +24,8 @@ async function setup(
 		debug = undefined as ((line: string) => void) | undefined,
 		/** Requests fail at the network level for this long after setup. */
 		networkOutageMs = 0,
+		/** What the worker accepts (3: an old worker, no fallbacks). */
+		maxCandidates = 3,
 	} = {},
 ) {
 	const { meta, data } = await fakeTorrent(pieceLength, pieceLength * pieces - 1000);
@@ -67,8 +69,15 @@ async function setup(
 			await new Promise((r) => setTimeout(r, 20));
 			return { kind: "error", message: "network: fetch failed", bytes: 0 };
 		}
-		const winner = plan.peers.find((p) => !refuses(p.addr, plan));
-		const others = plan.peers.filter((p) => p !== winner).map((p) => ({ peer: p.addr, err: refuses(p.addr, plan) ?? "lost" }));
+		// Like the worker: candidates in order, the first that unchokes wins;
+		// those after it never get a turn.
+		const all = [...plan.peers, ...plan.fallbacks];
+		expect(all.length).toBeLessThanOrEqual(maxCandidates);
+		const winner = all.find((p) => !refuses(p.addr, plan));
+		const at = winner ? all.indexOf(winner) : all.length;
+		const others = all
+			.filter((p) => p !== winner)
+			.map((p) => ({ peer: p.addr, err: all.indexOf(p) > at ? "untried" : (refuses(p.addr, plan) ?? "lost") }));
 		if (!winner) {
 			await new Promise((r) => setTimeout(r, 1));
 			return { kind: "no_peer", others, bytes: 0 };
@@ -131,6 +140,7 @@ async function setup(
 		store,
 		maxActive,
 		maxInflightBytes,
+		maxCandidates,
 		debug,
 		onVerified: (p) => verifiedOrder.push(p),
 	});
@@ -327,7 +337,7 @@ describe("Scheduler", { timeout: 30_000 }, () => {
 		expect(picky.peak["2.2.2.2:2"]).toBe(1);
 	});
 
-	it("keeps slow unchokers off the playback front and waits long enough for them elsewhere", async () => {
+	it("keeps slow unchokers off the playback front and waits long enough for them elsewhere", { timeout: 60_000 }, async () => {
 		const { scheduler, plans, served } = await setup(
 			{ "1.1.1.1:1": "transmission", "2.2.2.2:2": "slow" },
 			{ pieceLength: 1 << 20, pieces: 30 },
@@ -361,13 +371,19 @@ describe("Scheduler", { timeout: 30_000 }, () => {
 	it("scales parallel requests with the peers and caps memory in flight", async () => {
 		const many = Object.fromEntries(Array.from({ length: 20 }, (_, i) => [`10.0.0.${i}:1`, "fast" as Behaviour]));
 		const big = await setup(many, { maxActive: 24, pieces: 4 });
+		// A few requests at first, so the front gets the bandwidth...
+		expect(big.scheduler.concurrency).toBe(6);
+		// ...and all of them once playback could start.
+		big.scheduler.markVerified([0, 1, 2, 3]);
 		expect(big.scheduler.concurrency).toBe(24);
 		const small = await setup({ "1.1.1.1:1": "fast", "2.2.2.2:2": "fast" }, { maxActive: 24, pieces: 4 });
+		small.scheduler.markVerified([0, 1, 2, 3]);
 		expect(small.scheduler.concurrency).toBe(6);
 
-		// 1 MiB pieces: urgent = head 0–1, tail 38–39 and the window 0–15
-		// (20 MiB, more than the cap). Readahead (16–37) must wait for room;
-		// urgent work goes regardless, so the front never stalls on it.
+		// 1 MiB pieces, the first 4 already here: urgent = head 0–1, tail
+		// 38–39 and the window 4–19 (16 MiB, more than the cap). Readahead
+		// (20–37) must wait for room; urgent work goes regardless, so the
+		// front never stalls on it.
 		const crawlers = Object.fromEntries(Array.from({ length: 20 }, (_, i) => [`10.0.1.${i}:1`, "crawl" as Behaviour]));
 		const { scheduler, meta } = await setup(crawlers, {
 			maxActive: 24,
@@ -375,6 +391,7 @@ describe("Scheduler", { timeout: 30_000 }, () => {
 			pieces: 40,
 			maxInflightBytes: 4 << 20,
 		});
+		scheduler.markVerified([0, 1, 2, 3]);
 		scheduler.start();
 		await new Promise((r) => setTimeout(r, 1_000));
 		const states = new Uint8Array(meta.pieceCount);
@@ -382,9 +399,24 @@ describe("Scheduler", { timeout: 30_000 }, () => {
 		scheduler.stop();
 		const downloading = (from: number, to: number) =>
 			states.slice(from, to + 1).filter((s) => s === PieceState.Downloading).length;
-		expect(downloading(0, 15)).toBeGreaterThan(8);
-		expect(downloading(16, 37)).toBe(0);
+		expect(downloading(4, 19)).toBeGreaterThan(8);
+		expect(downloading(20, 37)).toBe(0);
 	});
+
+	it("at the start, gives the front the bandwidth before going wide", async () => {
+		const crawlers = Object.fromEntries(Array.from({ length: 20 }, (_, i) => [`10.0.1.${i}:1`, "crawl" as Behaviour]));
+		const { scheduler, plans } = await setup(crawlers, { maxActive: 24, pieceLength: 1 << 20, pieces: 40 });
+		scheduler.start();
+		await new Promise((r) => setTimeout(r, 300));
+		scheduler.stop();
+		expect(plans).toHaveLength(6);
+		// The first MiB (here piece 0) in 256 KiB parts from four peers, then
+		// the rest of the head and the tail.
+		expect(plans.map((p) => p.blocks[0][0])).toEqual([0, 0, 0, 0, 1, 38]);
+		expect(plans.slice(0, 4).map((p) => p.blocks[0][1])).toEqual([0, 16, 32, 48]);
+		expect(new Set(plans.slice(0, 4).map((p) => p.peers[0].addr)).size).toBe(4);
+	});
+
 	it("pauses briefly, not for long, after a burst of simultaneous network errors", async () => {
 		const many = Object.fromEntries(Array.from({ length: 8 }, (_, i) => [`10.0.0.${i}:1`, "fast" as Behaviour]));
 		const { scheduler, plans } = await setup(many, { maxActive: 16, pieces: 400, networkOutageMs: 100 });
@@ -406,5 +438,67 @@ describe("Scheduler", { timeout: 30_000 }, () => {
 		await until(() => scheduler.verifiedCount >= 64, 20_000);
 		scheduler.stop();
 		expect(lines.filter((l) => l.includes("slow: stolen"))).toEqual([]);
+	});
+
+	it("with a fan-out worker, works through dead peers without failing requests", async () => {
+		const peers: Record<string, Behaviour> = {};
+		for (let i = 1; i <= 20; i++) peers[`10.0.0.${i}:1`] = "unreachable";
+		peers["1.1.1.1:1"] = "fast";
+		peers["2.2.2.2:2"] = "transmission";
+		const lines: string[] = [];
+		const { swarm, scheduler, meta, plans, served } = await setup(peers, {
+			maxCandidates: 40,
+			maxActive: 6,
+			debug: (l) => lines.push(l),
+		});
+		// Probe results are stale: the dead peers look as good as the live one.
+		let tentativePeak = 0;
+		scheduler.start();
+		const watch = setInterval(() => {
+			for (const p of swarm.peers.values()) tentativePeak = Math.max(tentativePeak, p.tentative);
+		}, 1);
+		await until(() => scheduler.complete, 20_000);
+		clearInterval(watch);
+		scheduler.stop();
+		expect(scheduler.verifiedCount).toBe(meta.pieceCount);
+		expect(served["1.1.1.1:1"]).toBeGreaterThan(0);
+		// Only the first requests can come up empty (the live peer may be a
+		// fallback in two requests at most); once the dead are known, every
+		// request finds it.
+		const failed = lines.filter((l) => l.includes(" no_peer ")).map((l) => Number(/^#(\d+)/.exec(l)![1]));
+		expect(failed.every((id) => id <= 12), `failed: ${failed}`).toBe(true);
+		expect(plans.some((p) => p.fallbacks.length > 3)).toBe(true);
+		expect(tentativePeak).toBeLessThanOrEqual(2);
+		for (const p of swarm.peers.values()) expect(p.tentative).toBe(0);
+		// Choked Transmission fallbacks give way quickly to the next candidate.
+		for (const plan of plans) if (plan.fallbacks.length > 0 && plan.peers[0].addr !== "2.2.2.2:2") expect(plan.holdMs).toBeLessThanOrEqual(4_000);
+	});
+
+	it("a seek cancels far-away readahead and serves the new front first", async () => {
+		// 1 MiB pieces: urgent window 16 pieces. Slow peers keep readahead busy.
+		const { scheduler, plans, verifiedOrder } = await setup(
+			{ "1.1.1.1:1": "slow", "2.2.2.2:2": "slow", "3.3.3.3:3": "slow", "4.4.4.4:4": "slow" },
+			{ pieceLength: 1 << 20, pieces: 48, maxActive: 6 },
+		);
+		scheduler.start();
+		await until(() => scheduler.verifiedCount >= 6, 20_000);
+		const before = plans.length;
+		scheduler.setCursor(36);
+		const seekAt = Date.now();
+		// Pieces already fully received when we seeked still land first.
+		await new Promise((r) => setTimeout(r, 150));
+		const verifiedBefore = verifiedOrder.length;
+		await until(() => scheduler.isVerified(36) && scheduler.isVerified(37), 20_000);
+		const took = Date.now() - seekAt;
+		scheduler.stop();
+		// What launched right after the seek was for the new front (once
+		// that's all in flight, idle slots may wrap around to the start).
+		const after = plans.slice(before, before + 3);
+		expect(after.length).toBeGreaterThan(0);
+		for (const plan of after) expect(plan.blocks[0][0], `plan from piece ${plan.blocks[0][0]}`).toBeGreaterThanOrEqual(36);
+		// And the first pieces verified after the seek are there.
+		const next = verifiedOrder.slice(verifiedBefore).filter((p) => p > 1 && p < 46);
+		expect(next.slice(0, 2).every((p) => p >= 36), `${next}`).toBe(true);
+		expect(took).toBeLessThan(10_000);
 	});
 });
