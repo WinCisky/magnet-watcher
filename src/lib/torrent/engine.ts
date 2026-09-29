@@ -5,7 +5,7 @@ import { WORKER_API_URL, fetchInfoDict, fetchSwarm, fetchWorkerMaxCandidates, ty
 import { workerTransport } from "./batch";
 import { fileRange, parseInfoDict, type FileRange, type Metainfo } from "./metainfo";
 import { rememberFile } from "./library";
-import { Scheduler, PieceState } from "./scheduler";
+import { Scheduler, PieceState, type BatchReport } from "./scheduler";
 import { openPieceStore, type PieceStore } from "./store";
 import { Swarm } from "./swarm";
 
@@ -36,15 +36,21 @@ export interface EngineSnapshot {
 	/** Per piece: how many known peers hold it. */
 	availability: Uint16Array;
 	cursor: number;
+	/** First unverified piece at or after the cursor. */
+	front: number;
 	verifiedPieces: number;
 	verifiedBytes: number;
 	contiguousBytes: number;
 	/** Bytes/second received from peers. */
 	rate: number;
+	/** Bytes received from peers so far (this session). */
+	bytesReceived: number;
 	etaSeconds: number | null;
 	activeRequests: number;
 	requests: number;
 	hashFailures: number;
+	/** Verified pieces the browser refused to store. */
+	storeErrors: number;
 	peers: {
 		known: number;
 		reachable: number;
@@ -78,6 +84,25 @@ export interface EngineOptions {
 	maxCandidates?: number;
 	/** Diagnostics: one line per finished worker request. */
 	debug?: (line: string) => void;
+	/** Diagnostics: what the engine's requests took and how they ended. */
+	observer?: EngineObserver;
+}
+
+/**
+ * Diagnostics hooks. They run after a request is over, never per block;
+ * the engine ignores anything they throw.
+ */
+export interface EngineObserver {
+	/** One attempt at the info dict (error null: it arrived and checked out). */
+	infoDict?(ms: number, error: string | null): void;
+	/** One /swarm request (snapshot null: it failed). */
+	swarm?(ms: number, snapshot: SwarmSnapshot | null, error: string | null): void;
+	/** How many candidates the worker takes per request, and how long asking took. */
+	workerInfo?(maxCandidates: number, ms: number): void;
+	/** The torrent's layout is known and the pieces saved earlier are counted. */
+	ready?(meta: Metainfo, range: FileRange, verifiedPieces: number): void;
+	/** One finished worker request. */
+	batch?(report: BatchReport): void;
 }
 
 export class RecoveryEngine {
@@ -103,21 +128,30 @@ export class RecoveryEngine {
 		this.emit();
 		// What the worker supports, found out while the info dict loads.
 		const workerUrl = this.opts.workerUrl ?? WORKER_API_URL;
-		const maxCandidates = this.opts.maxCandidates ?? fetchWorkerMaxCandidates(
-			workerUrl,
-			AbortSignal.timeout(WORKER_INFO_TIMEOUT_MS),
-		);
+		const askedAt = performance.now();
+		const maxCandidates =
+			this.opts.maxCandidates ??
+			fetchWorkerMaxCandidates(workerUrl, AbortSignal.timeout(WORKER_INFO_TIMEOUT_MS)).then((n) => {
+				this.observe((o) => o.workerInfo?.(n, performance.now() - askedAt));
+				return n;
+			});
 		// Peers are found (and probed) while the info dict loads.
+		const fetchSnapshot =
+			this.opts.fetchSwarm ?? (() => fetchSwarm(this.opts.magnet, AbortSignal.timeout(SWARM_TIMEOUT_MS)));
 		this.swarm = new Swarm(
-			this.opts.fetchSwarm ?? (() => fetchSwarm(this.opts.magnet, AbortSignal.timeout(SWARM_TIMEOUT_MS))),
+			() => this.timed(fetchSnapshot, (o, ms, snapshot, error) => o.swarm?.(ms, snapshot, error)),
 			() => (this.availabilityAt = 0),
 		);
 		const swarmReady = this.swarm.start();
 		try {
-			const meta = await this.retry("Fetching piece hashes", async () =>
-				parseInfoDict(
-					await fetchInfoDict(this.opts.infoHash, AbortSignal.timeout(INFO_DICT_TIMEOUT_MS)),
-					this.opts.infoHash,
+			const meta = await this.retry("Fetching piece hashes", () =>
+				this.timed(
+					async () =>
+						parseInfoDict(
+							await fetchInfoDict(this.opts.infoHash, AbortSignal.timeout(INFO_DICT_TIMEOUT_MS)),
+							this.opts.infoHash,
+						),
+					(o, ms, _, error) => o.infoDict?.(ms, error),
 				),
 			);
 			if (!meta || this.stopped) return;
@@ -151,8 +185,12 @@ export class RecoveryEngine {
 				maxActive: this.opts.maxActive ?? (workerUrl.startsWith("https:") ? 24 : 5),
 				maxCandidates: await maxCandidates,
 				debug: this.opts.debug,
+				onBatchEnd: this.opts.observer ? (r) => this.observe((o) => o.batch?.(r)) : undefined,
 			});
 			this.scheduler.markVerified(stored);
+			const range = this.range;
+			const verified = this.scheduler.verifiedCount;
+			this.observe((o) => o.ready?.(meta, range, verified));
 			if (this.scheduler.complete) {
 				this.finishIfComplete();
 				return;
@@ -181,6 +219,31 @@ export class RecoveryEngine {
 	seek(fileByte: number): void {
 		if (!this.meta || !this.range || !this.scheduler) return;
 		this.scheduler.setCursor(Math.floor((this.range.offset + fileByte) / this.meta.pieceLength));
+	}
+
+	private observe(report: (observer: EngineObserver) => void): void {
+		if (!this.opts.observer) return;
+		try {
+			report(this.opts.observer);
+		} catch {
+			// Diagnostics must never get in the way of recovery.
+		}
+	}
+
+	/** Run `task`, telling the observer how long it took and how it ended. */
+	private async timed<T>(
+		task: () => Promise<T>,
+		report: (observer: EngineObserver, ms: number, result: T | null, error: string | null) => void,
+	): Promise<T> {
+		const started = performance.now();
+		try {
+			const result = await task();
+			this.observe((o) => report(o, performance.now() - started, result, null));
+			return result;
+		} catch (e) {
+			this.observe((o) => report(o, performance.now() - started, null, e instanceof Error ? e.message : String(e)));
+			throw e;
+		}
 	}
 
 	private async retry<T>(what: string, fn: () => Promise<T>): Promise<T | null> {
@@ -255,14 +318,17 @@ export class RecoveryEngine {
 			progress,
 			availability: this.availability.length === count ? this.availability : new Uint16Array(count),
 			cursor: scheduler?.cursor ?? 0,
+			front: scheduler?.front ?? 0,
 			verifiedPieces: scheduler?.verifiedCount ?? 0,
 			verifiedBytes,
 			contiguousBytes: scheduler?.contiguousFromStart() ?? 0,
 			rate: this.phase === "recovering" ? this.rate : 0,
+			bytesReceived: scheduler?.bytesReceived ?? 0,
 			etaSeconds: this.phase === "recovering" && this.rate > 1024 ? remaining / this.rate : null,
 			activeRequests: scheduler?.activeBatches ?? 0,
 			requests: scheduler?.requests ?? 0,
 			hashFailures: scheduler?.hashFailures ?? 0,
+			storeErrors: scheduler?.storeErrors ?? 0,
 			peers: { ...(this.swarm?.counts ?? { known: 0, reachable: 0, seeds: 0 }), ...peerStats },
 			storage: this.store?.kind ?? null,
 			swarmError: this.swarm?.error ?? null,

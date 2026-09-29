@@ -2,6 +2,7 @@
 	import { onMount } from "svelte";
 	import { fetchMetadata, fetchSeeders, warmUpSwarm, type TorrentMetadata } from "$lib/magnet/api";
 	import { isVideoFile } from "$lib/magnet/files";
+	import { diagnostics } from "$lib/diagnostics/recorder";
 	import MagnetInputStep from "./magnet-input-step.svelte";
 	import FileSelectStep from "./file-select-step.svelte";
 	import FileViewStep from "./file-view-step.svelte";
@@ -65,18 +66,23 @@
 		step = "input";
 
 		try {
-			const meta = await fetchMetadata(magnetUri, controller.signal);
+			const meta = await timed(() => fetchMetadata(magnetUri, controller.signal), controller.signal, (ms, e) =>
+				diagnostics.metadataApi(ms, e),
+			);
 			// Let magnet-seeders probe the swarm and fetch the piece hashes
 			// while the user is still choosing a file.
 			warmUpSwarm(magnetUri, meta.info_hash);
 			verifyPhase = "seeders";
-			const count = await fetchSeeders(meta.info_hash, controller.signal);
+			const count = await timed(() => fetchSeeders(meta.info_hash, controller.signal), controller.signal, (ms, e) =>
+				diagnostics.seedersCount(ms, e),
+			);
 
 			const videos = meta.files
 				.map((file, index) => ({ file, index }))
 				.filter(({ file }) => isVideoFile(file.path));
 
 			if (videos.length === 0) {
+				diagnostics.count("no_video_in_magnet");
 				metadata = null;
 				currentMagnet = null;
 				seedersCount = null;
@@ -100,6 +106,7 @@
 				if (opts.push) updateUrl({ magnet: magnetUri, file: fileIndexParam }, "push");
 			} else {
 				step = "select";
+				diagnostics.count("file_list_shown");
 				updateUrl({ magnet: magnetUri }, opts.push ? "push" : "replace");
 			}
 		} catch (e) {
@@ -116,6 +123,23 @@
 				verifyPhase = null;
 				abortController = null;
 			}
+		}
+	}
+
+	/** Run a request and report its time and outcome (not when the user cancelled it). */
+	async function timed<T>(
+		run: () => Promise<T>,
+		signal: AbortSignal,
+		report: (ms: number, error: string | null) => void,
+	): Promise<T> {
+		const started = performance.now();
+		try {
+			const result = await run();
+			report(performance.now() - started, null);
+			return result;
+		} catch (e) {
+			if (!signal.aborted) report(performance.now() - started, e instanceof Error ? e.message : String(e));
+			throw e;
 		}
 	}
 
@@ -178,9 +202,11 @@
 		const value = inputValue.trim();
 		if (!value) return;
 		if (!/^magnet:\?/i.test(value)) {
+			diagnostics.count("invalid_magnet");
 			error = "Enter a valid magnet link.";
 			return;
 		}
+		diagnostics.count("magnet_submitted");
 		runVerification(value, null, { push: true });
 	}
 
@@ -191,12 +217,14 @@
 
 	function handleSelect(index: number) {
 		if (!currentMagnet) return;
+		diagnostics.count(step === "view" ? "other_video_picked" : "file_picked");
 		selectedFileIndex = index;
 		step = "view";
 		updateUrl({ magnet: currentMagnet, file: index }, "push");
 	}
 
 	onMount(() => {
+		diagnostics.start();
 		syncFromUrl();
 		window.addEventListener("popstate", syncFromUrl);
 		return () => {
@@ -208,7 +236,10 @@
 
 {#if step === "saved"}
 	<SavedStep
-		onOpen={(magnet, file) => navigate(file === null ? { magnet } : { magnet, file })}
+		onOpen={(magnet, file) => {
+			diagnostics.count("saved_video_opened");
+			navigate(file === null ? { magnet } : { magnet, file });
+		}}
 		onBack={() => navigate(null)}
 	/>
 {:else if step === "select" && metadata}
@@ -233,6 +264,9 @@
 		phase={verifyPhase}
 		{error}
 		onSubmit={handleSubmit}
-		onShowSaved={() => navigate("saved")}
+		onShowSaved={() => {
+			diagnostics.count("saved_opened");
+			navigate("saved");
+		}}
 	/>
 {/if}

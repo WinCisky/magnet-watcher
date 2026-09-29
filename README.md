@@ -75,6 +75,45 @@ PUBLIC_SEEDERS_URL=http://127.0.0.1:8080 PUBLIC_WORKER_URL=http://127.0.0.1:8787
 To see every worker request in the browser console, run
 `localStorage.setItem("mw-debug", "1")` and reload.
 
+## Diagnostics
+
+The page records anonymous measurements of how each part of it performs.
+They stay in the browser (IndexedDB) until the user exports them from the
+home page's **Diagnostics** menu as JSON. The same menu deletes them.
+Nothing is ever sent anywhere. The code is in `src/lib/diagnostics/`.
+
+- **Visits.** One record per page load that did something:
+  - what the user did (magnet submitted, file picked, saved video opened…);
+  - the metadata API and `/peers` requests: outcomes, latency and errors;
+  - uncaught errors;
+  - the browser, OS and device class.
+- **Recoveries.** One record per video opened:
+  - milestones: piece hashes, first peers, first data, 1/4/16 MiB ready;
+  - `/metadata` and `/swarm` outcomes, and the largest swarm size seen;
+  - worker requests by how they ended, time to unchoke, why candidates
+    failed, and which clients served the data;
+  - speed per 10 s window, stalls (5 s or more with no data), time from a
+    seek to 4 MiB ready, failed piece checks, and storage errors.
+- **Privacy.** There are no magnet links, file or torrent names, info-hashes
+  or IP addresses. Error text is scrubbed of all of them, and sizes are
+  rounded. A torrent appears only as a hash salted with a secret that never
+  leaves the browser, so one torrent's recoveries can be grouped without
+  revealing which torrent it is. `installId` is a random id that tells one
+  browser's exports apart.
+- **Cost.** Recording bumps counters in memory, at points that already run
+  (a request ending, the 200 ms progress snapshot): about 0.3 µs per snapshot
+  and 2 µs per request. The visit is written at most every 15 s, when the
+  browser is idle, and when the page is hidden. A recovery's record is
+  ~1.5 KB. At most 300 visits, up to 90 days old, are kept. The report code
+  loads only on export.
+- **The export.** `weakSpots` and `workingWell` summarize the verdicts:
+  - `health` grades each part (lookup, seeder count, piece hashes, peer
+    discovery, worker requests, startup, download speed, seeking, integrity,
+    storage, page errors) as good, fair or poor. The limits are in
+    `thresholds`. Each part has a one-line summary and details;
+  - `visits` holds the raw records;
+  - histograms are counts per bucket, with the bounds in `buckets`.
+
 ## Commands
 
 | Command | Action |

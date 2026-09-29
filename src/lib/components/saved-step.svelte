@@ -16,6 +16,7 @@
 	} from "$lib/torrent/library";
 	import FileName from "./file-name.svelte";
 	import SavedBadge from "./saved-badge.svelte";
+	import { diagnostics } from "$lib/diagnostics/recorder";
 
 	let {
 		onOpen,
@@ -45,6 +46,7 @@
 			library = await listSaved();
 		} catch (e) {
 			error = e instanceof Error ? e.message : "Couldn't read the saved videos";
+			diagnostics.error("saved list", error);
 		}
 	}
 
@@ -61,8 +63,10 @@
 		error = null;
 		try {
 			await run();
+			diagnostics.count(key === "all" ? "saved_deleted_all" : "saved_deleted_one");
 		} catch (e) {
 			error = e instanceof Error ? e.message : "Couldn't delete it";
+			diagnostics.error("saved delete", error);
 		} finally {
 			deleting = null;
 			await load();

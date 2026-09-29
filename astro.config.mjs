@@ -12,6 +12,10 @@ export default defineConfig({
 
   vite: {
     plugins: [tailwindcss()],
+    define: {
+      // Which build a diagnostics export came from (each deploy builds anew).
+      __MW_BUILD__: JSON.stringify(new Date().toISOString().slice(0, 16) + 'Z'),
+    },
     resolve: {
       alias: {
         $lib: new URL('./src/lib', import.meta.url).pathname

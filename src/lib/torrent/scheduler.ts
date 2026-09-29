@@ -150,6 +150,29 @@ interface ActiveBatch {
 	tentative: Set<Peer>;
 	/** Aborted by us for crawling; its blocks went to other peers. */
 	slow: boolean;
+	/** How the candidates that lost the race fared (diagnostics). */
+	others: readonly { err?: string }[];
+}
+
+/** A finished worker request, for diagnostics. */
+export interface BatchReport {
+	kind: BatchEnd["kind"];
+	/** From launch to the end. */
+	ms: number;
+	/** From launch until a peer unchoked (null: none did). */
+	unchokeMs: number | null;
+	bytes: number;
+	urgent: boolean;
+	hedge: boolean;
+	/** Aborted by us for crawling. */
+	stolen: boolean;
+	fallbackWon: boolean;
+	/** How the candidates that didn't serve fared, per magnet-worker. */
+	others: readonly { err?: string }[];
+	/** The serving peer's client, as magnet-seeders' probe saw it. */
+	winnerClient: string | null;
+	/** Worker or network error text (error, refused). */
+	message: string | null;
 }
 
 export interface SchedulerOptions {
@@ -167,6 +190,8 @@ export interface SchedulerOptions {
 	onVerified?: (piece: number) => void;
 	/** Diagnostics: one line per finished request. */
 	debug?: (line: string) => void;
+	/** Diagnostics: a summary of every finished request. */
+	onBatchEnd?: (report: BatchReport) => void;
 }
 
 const key = (piece: number, block: number) => piece * 4096 + block;
@@ -686,6 +711,7 @@ export class Scheduler {
 			holding: new Set(plan.peers),
 			tentative: new Set(plan.fallbacks),
 			slow: false,
+			others: [],
 		};
 		for (const [piece, block] of plan.blocks) {
 			const w = this.workFor(piece);
@@ -724,6 +750,7 @@ export class Scheduler {
 					batch.holding.add(batch.winner);
 				}
 				this.learn(preamble.others);
+				batch.others = preamble.others;
 				if (batch.winner) {
 					if (preamble.reqq) batch.winner.reqq = preamble.reqq;
 					swarm.noteUnchoke(batch.winner, preamble.ms.unchoke - preamble.ms.handshake);
@@ -856,6 +883,19 @@ export class Scheduler {
 					`${batch.hedge ? " (hedge)" : ""}${"message" in end ? ` ${end.message}` : ""}${detail}`,
 			);
 		}
+		this.opts.onBatchEnd?.({
+			kind: end.kind,
+			ms: Date.now() - batch.startedAt,
+			unchokeMs: batch.unchokedAt ? batch.unchokedAt - batch.startedAt : null,
+			bytes: end.bytes,
+			urgent: batch.plan.urgent,
+			hedge: batch.hedge,
+			stolen: batch.slow,
+			fallbackWon: batch.winner !== null && !batch.plan.peers.includes(batch.winner),
+			others: end.kind === "no_peer" ? end.others : batch.others,
+			winnerClient: batch.winner?.client ?? null,
+			message: "message" in end ? end.message : null,
+		});
 		for (const k of [...batch.outstanding]) this.release(batch, k);
 		if (this.stopped) return;
 

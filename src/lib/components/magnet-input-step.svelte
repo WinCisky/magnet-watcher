@@ -4,6 +4,7 @@
 	import HardDriveIcon from "@lucide/svelte/icons/hard-drive";
 	import { Textarea } from "$lib/components/ui/textarea/index.js";
 	import { Button } from "$lib/components/ui/button/index.js";
+	import DiagnosticsMenu from "./diagnostics-menu.svelte";
 
 	let {
 		value = $bindable(""),
@@ -48,11 +49,12 @@
 	});
 </script>
 
-<div class="fixed top-4 left-4 z-50">
+<div class="fixed top-4 left-4 z-50 flex gap-2">
 	<Button variant="outline" size="sm" onclick={onShowSaved}>
 		<HardDriveIcon />
 		Saved
 	</Button>
+	<DiagnosticsMenu />
 </div>
 
 <form onsubmit={handleSubmit} class="flex w-full max-w-md flex-col items-center gap-3 px-4">

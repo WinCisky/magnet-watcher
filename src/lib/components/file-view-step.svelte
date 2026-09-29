@@ -7,6 +7,7 @@
 	import { formatBytes } from "$lib/magnet/files";
 	import type { TorrentFile } from "$lib/magnet/api";
 	import { RecoveryEngine, type EngineSnapshot } from "$lib/torrent/engine";
+	import { diagnostics } from "$lib/diagnostics/recorder";
 	import { savedProgress, type SavedProgress } from "$lib/torrent/library";
 	import { LEGEND, PIECE_COLORS, CURSOR_COLOR } from "$lib/torrent/palette";
 	import FileName from "./file-name.svelte";
@@ -44,6 +45,7 @@
 
 	async function openPicker() {
 		if (!picker) return;
+		diagnostics.count("other_videos_opened");
 		pickerOpen = true;
 		picker.showModal();
 		saved = await savedProgress(infoHash).catch(() => saved);
@@ -89,15 +91,23 @@
 	onMount(() => {
 		// `file`, `magnet` and `infoHash` are fixed for this component's
 		// lifetime: the parent re-mounts it when they change.
+		const recorder = diagnostics.recovery({ infoHash, path: file.path, fileSize: file.size, videos: files.length });
 		engine = new RecoveryEngine({
 			infoHash,
 			magnet,
 			file: { index: fileIndex, path: file.path, offset: file.offset, size: file.size },
-			onSnapshot: (s) => (snapshot = s),
+			onSnapshot: (s) => {
+				snapshot = s;
+				recorder.sample(s);
+			},
 			debug: debugLogger(),
+			observer: recorder,
 		});
 		void engine.start();
-		return () => engine?.stop();
+		return () => {
+			engine?.stop();
+			recorder.end();
+		};
 	});
 </script>
 
