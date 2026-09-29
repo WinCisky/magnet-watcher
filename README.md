@@ -5,6 +5,25 @@ pieces from the BitTorrent swarm, verifying each one in the browser.
 Recovery is sequential (the file's head and tail first, then in order from a
 movable front) so it can back streaming and seeking later.
 
+- **Choosing a video.** A magnet's videos are shown as a folder tree (like
+  `tree`): folders first, episodes in number order, folders holding a single
+  folder merged into one row. Large folders start closed. With 8 or more
+  videos, a filter box matches every typed word against the full path. Names
+  are never cut off; they wrap at dots, dashes and slashes. On the video
+  page, **Other videos** opens the same tree to switch to another video of
+  the torrent.
+- **Saved videos.** Every video opened is saved in the browser as it's
+  recovered. **Saved**, top-left of the home page (`?saved`), lists them,
+  most recent first:
+  - partly recovered ones are tagged **Partial** with their percentage;
+  - opening one resumes where it left off;
+  - each can be deleted on its own, or everything at once, with a second
+    click to confirm.
+
+  Deleting a video keeps the pieces at its edges that a neighbouring saved
+  video still needs. Pieces saved before names were recorded show up by
+  info-hash: open one to pick its video again, or delete it.
+
 ## How chunk recovery works
 
 - **[magnet-seeders](https://github.com/WinCisky/magnet-seeders)** (VPS)
@@ -41,7 +60,8 @@ movable front) so it can back streaming and seeking later.
   - Peers that unchoke on a timer (Transmission) are given a longer wait
     instead of being marked as failures.
 
-  Verified pieces are stored in Cache Storage (one cache per torrent), so a
+  Verified pieces are stored in Cache Storage (one cache per torrent, with a
+  record of the files opened from it: `src/lib/torrent/library.ts`), so a
   reload resumes where it left off. The view shows every piece's state
   (recovered, downloading, pending, no source, failed check) on a piece map
   and a seek-bar-style strip.

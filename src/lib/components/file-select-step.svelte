@@ -1,35 +1,35 @@
 <script lang="ts">
-	import { formatBytes } from "$lib/magnet/files";
+	import { onMount } from "svelte";
 	import type { TorrentFile } from "$lib/magnet/api";
+	import { savedProgress, type SavedProgress } from "$lib/torrent/library";
+	import FileName from "./file-name.svelte";
+	import FileTree from "./file-tree.svelte";
 
 	let {
 		name,
+		infoHash,
 		files,
 		onSelect,
 	}: {
 		name: string;
+		infoHash: string;
 		files: { file: TorrentFile; index: number }[];
 		onSelect: (index: number) => void;
 	} = $props();
+
+	let saved = $state.raw(new Map<number, SavedProgress>());
+
+	onMount(() => {
+		savedProgress(infoHash)
+			.then((p) => (saved = p))
+			.catch(() => {});
+	});
 </script>
 
-<div class="flex w-full max-w-lg flex-col gap-4 px-4">
+<div class="flex w-full max-w-2xl flex-col gap-4 px-4 py-16">
 	<div class="text-center">
-		<h1 class="text-lg font-medium">{name}</h1>
-		<p class="text-muted-foreground text-sm">Select a video file</p>
+		<h1 class="text-lg font-medium"><FileName {name} /></h1>
+		<p class="text-muted-foreground text-sm">{files.length} videos · select one</p>
 	</div>
-	<ul class="flex flex-col gap-2">
-		{#each files as { file, index } (index)}
-			<li>
-				<button
-					type="button"
-					onclick={() => onSelect(index)}
-					class="border-input hover:bg-accent hover:text-accent-foreground flex w-full items-center justify-between rounded-md border px-3 py-2 text-left text-sm transition-colors"
-				>
-					<span class="truncate">{file.path}</span>
-					<span class="text-muted-foreground ml-3 shrink-0">{formatBytes(file.size)}</span>
-				</button>
-			</li>
-		{/each}
-	</ul>
+	<FileTree {files} {onSelect} {saved} />
 </div>

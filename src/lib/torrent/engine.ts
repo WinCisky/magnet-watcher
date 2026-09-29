@@ -4,6 +4,7 @@
 import { WORKER_API_URL, fetchInfoDict, fetchSwarm, fetchWorkerMaxCandidates, type SwarmSnapshot } from "$lib/magnet/api";
 import { workerTransport } from "./batch";
 import { fileRange, parseInfoDict, type FileRange, type Metainfo } from "./metainfo";
+import { rememberFile } from "./library";
 import { Scheduler, PieceState } from "./scheduler";
 import { openPieceStore, type PieceStore } from "./store";
 import { Swarm } from "./swarm";
@@ -63,7 +64,8 @@ export interface EngineSnapshot {
 export interface EngineOptions {
 	infoHash: string;
 	magnet: string;
-	file: { path: string; offset: number; size: number };
+	/** `index`: its place in the magnet's file listing, to list it among saved files. */
+	file: { index?: number; path: string; offset: number; size: number };
 	onSnapshot: (snapshot: EngineSnapshot) => void;
 	workerUrl?: string;
 	/** Where verified pieces go (default: Cache Storage, else memory). */
@@ -125,6 +127,15 @@ export class RecoveryEngine {
 
 			this.store = this.opts.store ?? (await openPieceStore(meta.infoHash));
 			const stored = await this.store.list().catch(() => [] as number[]);
+			const { index, path } = this.opts.file;
+			if (!this.opts.store && this.store.kind === "cache" && index !== undefined) {
+				const { offset, size } = this.range;
+				void rememberFile(
+					meta.infoHash,
+					{ name: meta.name, magnet: this.opts.magnet, pieceLength: meta.pieceLength },
+					{ index, path, offset, size },
+				).catch(() => {});
+			}
 
 			this.phase = "peers";
 			this.message = "Finding peers";

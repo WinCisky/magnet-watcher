@@ -5,9 +5,10 @@
 	import MagnetInputStep from "./magnet-input-step.svelte";
 	import FileSelectStep from "./file-select-step.svelte";
 	import FileViewStep from "./file-view-step.svelte";
+	import SavedStep from "./saved-step.svelte";
 
 	let inputValue = $state("");
-	let step = $state<"input" | "select" | "view">("input");
+	let step = $state<"input" | "select" | "view" | "saved">("input");
 	let verifying = $state(false);
 	let verifyPhase = $state<"metadata" | "seeders" | null>(null);
 	let error = $state<string | null>(null);
@@ -30,10 +31,13 @@
 		metadata && selectedFileIndex != null ? metadata.files[selectedFileIndex] : null
 	);
 
-	function updateUrl(params: { magnet: string; file?: number } | null, mode: "push" | "replace") {
+	/** `"saved"`: the saved videos; null: home. */
+	function updateUrl(params: { magnet: string; file?: number } | "saved" | null, mode: "push" | "replace") {
 		const url = new URL(window.location.href);
 		url.search = "";
-		if (params) {
+		if (params === "saved") {
+			url.searchParams.set("saved", "");
+		} else if (params) {
 			url.searchParams.set("magnet", params.magnet);
 			if (params.file != null) url.searchParams.set("file", String(params.file));
 		}
@@ -93,6 +97,7 @@
 			} else if (fileIndexParam != null && videos.some((v) => v.index === fileIndexParam)) {
 				selectedFileIndex = fileIndexParam;
 				step = "view";
+				if (opts.push) updateUrl({ magnet: magnetUri, file: fileIndexParam }, "push");
 			} else {
 				step = "select";
 				updateUrl({ magnet: magnetUri }, opts.push ? "push" : "replace");
@@ -119,6 +124,16 @@
 		const magnet = url.searchParams.get("magnet");
 		const fileParam = url.searchParams.get("file");
 		const fileIndex = fileParam != null && /^\d+$/.test(fileParam) ? Number(fileParam) : null;
+
+		if (url.searchParams.has("saved")) {
+			abortController?.abort();
+			abortController = null;
+			verifying = false;
+			verifyPhase = null;
+			error = null;
+			step = "saved";
+			return;
+		}
 
 		if (!magnet) {
 			abortController?.abort();
@@ -169,6 +184,11 @@
 		runVerification(value, null, { push: true });
 	}
 
+	function navigate(params: { magnet: string; file?: number } | "saved" | null) {
+		updateUrl(params, "push");
+		syncFromUrl();
+	}
+
 	function handleSelect(index: number) {
 		if (!currentMagnet) return;
 		selectedFileIndex = index;
@@ -186,11 +206,25 @@
 	});
 </script>
 
-{#if step === "select" && metadata}
-	<FileSelectStep name={metadata.name} files={videoFiles} onSelect={handleSelect} />
-{:else if step === "view" && selectedFile && seedersCount != null && metadata && currentMagnet}
+{#if step === "saved"}
+	<SavedStep
+		onOpen={(magnet, file) => navigate(file === null ? { magnet } : { magnet, file })}
+		onBack={() => navigate(null)}
+	/>
+{:else if step === "select" && metadata}
+	<FileSelectStep name={metadata.name} infoHash={metadata.info_hash} files={videoFiles} onSelect={handleSelect} />
+{:else if step === "view" && selectedFile && selectedFileIndex != null && seedersCount != null && metadata && currentMagnet}
 	{#key `${currentMagnet}#${selectedFileIndex}`}
-		<FileViewStep file={selectedFile} magnet={currentMagnet} infoHash={metadata.info_hash} seeders={seedersCount} />
+		<FileViewStep
+			file={selectedFile}
+			fileIndex={selectedFileIndex}
+			files={videoFiles}
+			torrentName={metadata.name}
+			magnet={currentMagnet}
+			infoHash={metadata.info_hash}
+			seeders={seedersCount}
+			onSelect={handleSelect}
+		/>
 	{/key}
 {:else}
 	<MagnetInputStep
@@ -199,5 +233,6 @@
 		phase={verifyPhase}
 		{error}
 		onSubmit={handleSubmit}
+		onShowSaved={() => navigate("saved")}
 	/>
 {/if}

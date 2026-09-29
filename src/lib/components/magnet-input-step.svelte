@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { onMount } from "svelte";
 	import LoaderCircleIcon from "@lucide/svelte/icons/loader-circle";
+	import HardDriveIcon from "@lucide/svelte/icons/hard-drive";
 	import { Textarea } from "$lib/components/ui/textarea/index.js";
 	import { Button } from "$lib/components/ui/button/index.js";
 
@@ -10,12 +11,14 @@
 		phase = null,
 		error = null,
 		onSubmit,
+		onShowSaved,
 	}: {
 		value: string;
 		verifying?: boolean;
 		phase?: "metadata" | "seeders" | null;
 		error?: string | null;
 		onSubmit: () => void;
+		onShowSaved: () => void;
 	} = $props();
 
 	let inputEl: HTMLTextAreaElement | null = $state(null);
@@ -44,6 +47,13 @@
 		inputEl?.focus();
 	});
 </script>
+
+<div class="fixed top-4 left-4 z-50">
+	<Button variant="outline" size="sm" onclick={onShowSaved}>
+		<HardDriveIcon />
+		Saved
+	</Button>
+</div>
 
 <form onsubmit={handleSubmit} class="flex w-full max-w-md flex-col items-center gap-3 px-4">
 	<div class="w-full flex flex-col gap-1">

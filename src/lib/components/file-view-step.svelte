@@ -1,19 +1,60 @@
 <script lang="ts">
-	import { onMount } from "svelte";
+	import { onMount, tick } from "svelte";
 	import LoaderCircleIcon from "@lucide/svelte/icons/loader-circle";
+	import ListVideoIcon from "@lucide/svelte/icons/list-video";
+	import XIcon from "@lucide/svelte/icons/x";
+	import { Button } from "$lib/components/ui/button/index.js";
 	import { formatBytes } from "$lib/magnet/files";
 	import type { TorrentFile } from "$lib/magnet/api";
 	import { RecoveryEngine, type EngineSnapshot } from "$lib/torrent/engine";
+	import { savedProgress, type SavedProgress } from "$lib/torrent/library";
 	import { LEGEND, PIECE_COLORS, CURSOR_COLOR } from "$lib/torrent/palette";
+	import FileName from "./file-name.svelte";
+	import FileTree from "./file-tree.svelte";
 	import PieceMap from "./piece-map.svelte";
 	import PieceStrip from "./piece-strip.svelte";
 
 	let {
 		file,
+		fileIndex,
+		files,
+		torrentName,
 		magnet,
 		infoHash,
 		seeders,
-	}: { file: TorrentFile; magnet: string; infoHash: string; seeders: number } = $props();
+		onSelect,
+	}: {
+		file: TorrentFile;
+		fileIndex: number;
+		/** Every video of the torrent, to switch to another. */
+		files: { file: TorrentFile; index: number }[];
+		torrentName: string;
+		magnet: string;
+		infoHash: string;
+		seeders: number;
+		onSelect: (index: number) => void;
+	} = $props();
+
+	const folders = $derived(file.path.split("/").slice(0, -1).join(" / "));
+	const baseName = $derived(file.path.split("/").at(-1) ?? file.path);
+
+	let picker: HTMLDialogElement | undefined = $state();
+	let pickerOpen = $state(false);
+	let saved = $state.raw(new Map<number, SavedProgress>());
+
+	async function openPicker() {
+		if (!picker) return;
+		pickerOpen = true;
+		picker.showModal();
+		saved = await savedProgress(infoHash).catch(() => saved);
+		await tick();
+		picker.querySelector('[aria-current="true"]')?.scrollIntoView({ block: "center" });
+	}
+
+	function pick(index: number) {
+		picker?.close();
+		if (index !== fileIndex) onSelect(index);
+	}
 
 	let snapshot: EngineSnapshot | null = $state.raw(null);
 	let engine: RecoveryEngine | null = null;
@@ -51,7 +92,7 @@
 		engine = new RecoveryEngine({
 			infoHash,
 			magnet,
-			file: { path: file.path, offset: file.offset, size: file.size },
+			file: { index: fileIndex, path: file.path, offset: file.offset, size: file.size },
 			onSnapshot: (s) => (snapshot = s),
 			debug: debugLogger(),
 		});
@@ -61,9 +102,25 @@
 </script>
 
 <div class="fixed inset-0 z-[60] flex flex-col overflow-y-auto bg-black text-white">
+	{#if files.length > 1}
+		<div class="mx-auto w-full max-w-3xl px-4 pt-4">
+			<button
+				type="button"
+				onclick={openPicker}
+				class="inline-flex items-center gap-1.5 rounded-md border border-white/20 px-2.5 py-1.5 text-sm text-white/80 transition-colors hover:bg-white/10 hover:text-white"
+			>
+				<ListVideoIcon class="size-4" />
+				Other videos
+				<span class="text-white/50 tabular-nums">{files.length}</span>
+			</button>
+		</div>
+	{/if}
 	<div class="mx-auto flex w-full max-w-3xl flex-1 flex-col justify-center gap-5 px-4 py-8">
 		<div class="text-center">
-			<p class="truncate text-lg font-medium">{file.path}</p>
+			{#if folders}
+				<p class="text-sm text-white/60"><FileName name={folders} /></p>
+			{/if}
+			<p class="text-lg font-medium"><FileName name={baseName} /></p>
 			<p class="text-sm text-white/60">
 				{formatBytes(file.size)}
 				{#if snapshot && snapshot.states.length > 0}
@@ -147,3 +204,31 @@
 		</div>
 	{/if}
 </div>
+
+<!-- Always dark, like the stage behind it. -->
+<dialog
+	bind:this={picker}
+	onclose={() => (pickerOpen = false)}
+	onclick={(e) => e.target === picker && picker.close()}
+	aria-label="Choose another video"
+	class="dark bg-background text-foreground m-auto w-[min(42rem,calc(100vw-2rem))] max-w-none rounded-lg border p-0 backdrop:bg-black/70"
+>
+	<div class="flex max-h-[85dvh] flex-col">
+		<div class="flex items-start gap-2 border-b p-4">
+			<div class="min-w-0 flex-1">
+				<h2 class="font-medium">Choose another video</h2>
+				<p class="text-muted-foreground text-sm"><FileName name={torrentName} /></p>
+			</div>
+			<Button variant="ghost" size="icon-sm" aria-label="Close" onclick={() => picker?.close()}>
+				<XIcon />
+			</Button>
+		</div>
+		<div class="overflow-y-auto px-4 pb-4">
+			{#if pickerOpen}
+				<div class="pt-4">
+					<FileTree {files} current={fileIndex} {saved} sticky onSelect={pick} />
+				</div>
+			{/if}
+		</div>
+	</div>
+</dialog>

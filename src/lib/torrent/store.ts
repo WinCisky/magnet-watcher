@@ -10,10 +10,23 @@ export interface PieceStore {
 	get(piece: number): Promise<Uint8Array | undefined>;
 }
 
+/** Every torrent's cache is named this plus its info-hash. */
+export const PIECE_CACHE_PREFIX = "mw-pieces-";
+
+export function pieceUrl(infoHash: string, piece: number): string {
+	return `https://magnet-watcher.pieces/${infoHash}/${piece}`;
+}
+
+/** The piece a cache key holds, or null for other entries (see library.ts). */
+export function pieceOfUrl(url: string): number | null {
+	const tail = url.slice(url.lastIndexOf("/") + 1);
+	return /^\d+$/.test(tail) ? Number(tail) : null;
+}
+
 export async function openPieceStore(infoHash: string): Promise<PieceStore> {
 	if (typeof caches !== "undefined") {
 		try {
-			return new CachePieceStore(await caches.open(`mw-pieces-${infoHash}`), infoHash);
+			return new CachePieceStore(await caches.open(PIECE_CACHE_PREFIX + infoHash), infoHash);
 		} catch {
 			// Cache Storage unavailable (e.g. some private modes): keep going in memory.
 		}
@@ -30,12 +43,12 @@ class CachePieceStore implements PieceStore {
 	) {}
 
 	private key(piece: number): string {
-		return `https://magnet-watcher.pieces/${this.infoHash}/${piece}`;
+		return pieceUrl(this.infoHash, piece);
 	}
 
 	async list(): Promise<number[]> {
 		const keys = await this.cache.keys();
-		return keys.map((r) => Number(r.url.slice(r.url.lastIndexOf("/") + 1))).filter(Number.isInteger);
+		return keys.map((r) => pieceOfUrl(r.url)).filter((p) => p !== null);
 	}
 
 	async put(piece: number, data: Uint8Array): Promise<void> {
