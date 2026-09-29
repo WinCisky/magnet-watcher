@@ -92,7 +92,9 @@ export interface SwarmSnapshot {
 	probed_at: number;
 	token_exp?: number;
 	num_pieces?: number;
-	counts: { known: number; probed: number; reachable: number; seeds: number; unchoked: number };
+	/** False while magnet-seeders is still probing: poll again soon. */
+	complete?: boolean;
+	counts: { known: number; probed: number; pending?: number; reachable: number; seeds: number; unchoked: number };
 	peers: SwarmPeer[];
 }
 

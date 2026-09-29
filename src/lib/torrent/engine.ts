@@ -100,10 +100,17 @@ export class RecoveryEngine {
 		this.timer = setInterval(() => this.emit(), SNAPSHOT_MS);
 		this.emit();
 		// What the worker supports, found out while the info dict loads.
+		const workerUrl = this.opts.workerUrl ?? WORKER_API_URL;
 		const maxCandidates = this.opts.maxCandidates ?? fetchWorkerMaxCandidates(
-			this.opts.workerUrl ?? WORKER_API_URL,
+			workerUrl,
 			AbortSignal.timeout(WORKER_INFO_TIMEOUT_MS),
 		);
+		// Peers are found (and probed) while the info dict loads.
+		this.swarm = new Swarm(
+			this.opts.fetchSwarm ?? (() => fetchSwarm(this.opts.magnet, AbortSignal.timeout(SWARM_TIMEOUT_MS))),
+			() => (this.availabilityAt = 0),
+		);
+		const swarmReady = this.swarm.start();
 		try {
 			const meta = await this.retry("Fetching piece hashes", async () =>
 				parseInfoDict(
@@ -121,11 +128,6 @@ export class RecoveryEngine {
 
 			this.phase = "peers";
 			this.message = "Finding peers";
-			const workerUrl = this.opts.workerUrl ?? WORKER_API_URL;
-			this.swarm = new Swarm(
-				this.opts.fetchSwarm ?? (() => fetchSwarm(this.opts.magnet, AbortSignal.timeout(SWARM_TIMEOUT_MS))),
-				() => (this.availabilityAt = 0),
-			);
 			this.scheduler = new Scheduler({
 				meta,
 				range: this.range,
@@ -144,7 +146,7 @@ export class RecoveryEngine {
 				this.finishIfComplete();
 				return;
 			}
-			await this.swarm.start();
+			await swarmReady;
 			if (this.stopped) return;
 			this.phase = "recovering";
 			this.message = null;

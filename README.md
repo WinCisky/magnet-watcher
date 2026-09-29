@@ -10,8 +10,10 @@ movable front) so it can back streaming and seeking later.
 - **[magnet-seeders](https://github.com/WinCisky/magnet-seeders)** (VPS)
   provides:
   - `/swarm`: the peers, probed over TCP (reachable, seed or bitfield,
-    unchoke speed), each with a signed token. The page polls it every 5
-    minutes.
+    unchoke speed), each with a signed token. It answers as soon as the
+    first peers unchoke a probe (`complete: false`); the page polls every
+    1.5 s until the whole swarm is probed, then every 5 minutes. The page
+    asks for it alongside the info dict, not after.
   - `/metadata`: the torrent's info dict. Its SHA-1 must equal the
     info-hash, and it holds every piece's hash.
 - **[magnet-worker](https://github.com/WinCisky/magnet-worker)** (Cloudflare

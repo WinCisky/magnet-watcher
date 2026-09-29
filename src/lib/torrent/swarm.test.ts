@@ -1,6 +1,6 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { SwarmSnapshot } from "$lib/magnet/api";
-import { Swarm, isProven, isQuickUnchoker } from "./swarm";
+import { PARTIAL_POLL_MS, Swarm, isProven, isQuickUnchoker } from "./swarm";
 
 function snapshot(peers: SwarmSnapshot["peers"], tokenExp = 2_000_000_000): SwarmSnapshot {
 	return {
@@ -118,19 +118,47 @@ describe("Swarm", () => {
 		expect(t.backoffUntil).toBe(now + 4 * 60_000);
 	});
 
+	it("polls again while magnet-seeders is still probing, and stops once complete", async () => {
+		vi.useFakeTimers();
+		try {
+			let calls = 0;
+			const swarm = new Swarm(async () => {
+				calls++;
+				const probing = calls === 1;
+				const peer = probing ? { ...unknown, err: "probing" } : { ...unknown, ok: true, seed: true, err: undefined };
+				return { ...snapshot([peer]), complete: !probing };
+			}, () => {});
+			await swarm.refresh();
+			const peer = swarm.peers.get(unknown.addr)!;
+			expect(peer.probeErr).toBe("probing");
+			await vi.advanceTimersByTimeAsync(PARTIAL_POLL_MS);
+			expect(calls).toBe(2);
+			expect(peer.probedOk).toBe(true);
+			expect(peer.probeErr).toBeNull();
+			await vi.advanceTimersByTimeAsync(PARTIAL_POLL_MS * 3);
+			expect(calls).toBe(2);
+			swarm.stop();
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
 	it("lists fallbacks idle first, the unreachable last, and never learns from `untried`", async () => {
 		let now = 1_000_000;
 		const peers = ["1.1.1.1:1", "2.2.2.2:2", "3.3.3.3:3", "4.4.4.4:4", "5.5.5.5:5"].map((addr) => ({ ...seed, addr }));
-		const stranger = { addr: "6.6.6.6:6", ok: false, seed: false, fast: false, t: "tok-f" };
-		const swarm = new Swarm(async () => snapshot([...peers, partial, stranger]), () => {}, () => now);
+		const stranger = { addr: "6.6.6.6:6", ok: false, err: "connect_timeout", seed: false, fast: false, t: "tok-f" };
+		const pending = { addr: "7.7.7.7:7", ok: false, err: "probing", seed: false, fast: false, t: "tok-g" };
+		const hungUp = { addr: "8.8.8.8:8", ok: false, err: "closed", seed: false, fast: false, t: "tok-h" };
+		const swarm = new Swarm(async () => snapshot([...peers, partial, stranger, hungUp, pending]), () => {}, () => now);
 		await swarm.refresh();
 		const [a, b, c, d, e] = peers.map((p) => swarm.peers.get(p.addr)!);
 		swarm.failed(b, "connect_timeout"); // unreachable: last
 		swarm.failed(c, "choked"); // resting: after the idle ones
 		swarm.acquire(d); // busy: after the idle ones, before the resting
 		const order = swarm.fallbacks([1], new Set([a.addr]), 10).map((p) => p.addr);
-		// The partial peer lacks piece 1; the probe couldn't reach the stranger.
-		expect(order).toEqual([e.addr, d.addr, c.addr, stranger.addr, b.addr]);
+		// The partial peer lacks piece 1. Unprobed peers before the ones the
+		// probe got nothing from, and the probe couldn't reach the stranger.
+		expect(order).toEqual([e.addr, d.addr, c.addr, pending.addr, hungUp.addr, stranger.addr, b.addr]);
 		expect(swarm.fallbacks([1], new Set(), 2)).toHaveLength(2);
 
 		// Named in two open requests already: left out.

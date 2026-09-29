@@ -5,6 +5,9 @@ import type { SwarmPeer, SwarmSnapshot } from "$lib/magnet/api";
 
 export const REFRESH_INTERVAL_MS = 5 * 60_000;
 const MIN_REFRESH_GAP_MS = 30_000;
+/** magnet-seeders answers before it has probed everyone: ask again soon. */
+export const PARTIAL_POLL_MS = 1_500;
+const MAX_PARTIAL_POLLS = 20;
 /** Don't hand the worker a token this close to expiring. */
 const TOKEN_MARGIN_S = 30;
 /** Up to this many parallel connections to a peer that serves us fast. */
@@ -26,6 +29,8 @@ export interface Peer {
 	tokenExp: number;
 	/** magnet-seeders reached it over TCP. */
 	probedOk: boolean;
+	/** Why magnet-seeders' probe failed ("probing": not done yet). */
+	probeErr: string | null;
 	seed: boolean;
 	have: Uint8Array | null;
 	reqq: number | null;
@@ -83,6 +88,9 @@ export class Swarm {
 	counts = { known: 0, reachable: 0, seeds: 0 };
 	lastRefresh = 0;
 	private timer: ReturnType<typeof setInterval> | undefined;
+	private pollTimer: ReturnType<typeof setTimeout> | undefined;
+	private partialPolls = 0;
+	private stopped = false;
 	private refreshing: Promise<void> | null = null;
 	error: string | null = null;
 
@@ -99,7 +107,9 @@ export class Swarm {
 	}
 
 	stop(): void {
+		this.stopped = true;
 		clearInterval(this.timer);
+		clearTimeout(this.pollTimer);
 	}
 
 	/** Refresh now, unless we just did (tokens rejected, or out of peers). */
@@ -112,6 +122,12 @@ export class Swarm {
 			.then((snapshot) => {
 				this.merge(snapshot);
 				this.error = null;
+				// Still probing: fetch the rest as it comes in.
+				clearTimeout(this.pollTimer);
+				if (snapshot.complete === false && this.partialPolls < MAX_PARTIAL_POLLS && !this.stopped) {
+					this.partialPolls++;
+					this.pollTimer = setTimeout(() => void this.refresh(), PARTIAL_POLL_MS);
+				}
 			})
 			.catch((e: unknown) => {
 				this.error = e instanceof Error ? e.message : "Couldn't reach magnet-seeders";
@@ -136,6 +152,7 @@ export class Swarm {
 					token: fresh.token,
 					tokenExp: fresh.tokenExp,
 					probedOk: fresh.probedOk,
+					probeErr: fresh.probeErr,
 					seed: fresh.seed || known.seed,
 					have: fresh.seed ? null : (fresh.have ?? known.have),
 					reqq: fresh.reqq ?? known.reqq,
@@ -198,11 +215,11 @@ export class Swarm {
 	 * them after the lead: most may well be dead, since the worker works
 	 * through them 6 at a time and only the first to unchoke matters.
 	 * Peers known to be reachable first (idle, then busy, then resting,
-	 * soonest back first), then ones nobody could reach yet (magnet-seeders'
-	 * probe fails for most of a swarm, but some are reachable from
-	 * Cloudflare), and those that failed to connect for us last. Peers known
-	 * to lack `pieces[0]` or already named in MAX_TENTATIVE requests are
-	 * left out.
+	 * soonest back first), then ones nobody could reach yet: still being
+	 * probed, then the probe connected but got nothing useful, then the
+	 * probe couldn't connect (a few are reachable from Cloudflare anyway).
+	 * Those that failed to connect for us come last. Peers known to lack
+	 * `pieces[0]` or already named in MAX_TENTATIVE requests are left out.
 	 */
 	fallbacks(pieces: number[], exclude: ReadonlySet<string>, n: number, quickFirst = false): Peer[] {
 		if (n <= 0) return [];
@@ -216,8 +233,8 @@ export class Swarm {
 			const unreachable = peer.lastFailure === "connect_failed" || peer.lastFailure === "connect_timeout";
 			const reachable = peer.probedOk || peer.aliveAt > 0 || peer.wins > 0;
 			let tier: number;
-			if (unreachable) tier = 4;
-			else if (!reachable) tier = 3;
+			if (unreachable) tier = 6;
+			else if (!reachable) tier = probeTier(peer.probeErr);
 			else if (resting) tier = 2;
 			else tier = this.available(peer, now) ? 0 : 1;
 			tiers.set(peer, tier);
@@ -228,7 +245,7 @@ export class Swarm {
 				(a, b) =>
 					tiers.get(a)! - tiers.get(b)! ||
 					(quickFirst ? Number(isQuickUnchoker(b)) - Number(isQuickUnchoker(a)) : 0) ||
-					(tiers.get(a) === 2 || tiers.get(a) === 4
+					(tiers.get(a) === 2 || tiers.get(a) === 6
 						? a.backoffUntil - b.backoffUntil
 						: scores.get(b)! - scores.get(a)!),
 			)
@@ -434,6 +451,13 @@ export class Swarm {
 	}
 }
 
+/** Fallback tier (3–5) of a peer magnet-seeders' probe didn't reach. */
+function probeTier(err: string | null): number {
+	if (err === null || err === "probing") return 3;
+	if (err === "connect_failed" || err === "connect_timeout") return 5;
+	return 4;
+}
+
 /** Unchoke latency: what we measured, else magnet-seeders' probe. */
 export function unchokeLatency(peer: Peer): number | null {
 	return peer.unchokeEwma ?? peer.unchokeMs;
@@ -477,6 +501,7 @@ function fromSnapshot(p: SwarmPeer, tokenExp: number): Peer {
 		token: p.t ?? "",
 		tokenExp,
 		probedOk: p.ok,
+		probeErr: p.ok ? null : (p.err ?? "unknown"),
 		seed: p.ok && p.seed,
 		have: p.have ? decodeBase64(p.have) : null,
 		reqq: p.reqq ?? null,
