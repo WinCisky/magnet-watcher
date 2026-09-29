@@ -24,6 +24,8 @@ async function setup(
 		debug = undefined as ((line: string) => void) | undefined,
 		/** Requests fail at the network level for this long after setup. */
 		networkOutageMs = 0,
+		/** The worker refuses every request (429) for this long after setup. */
+		refusedMs = 0,
 		/** What the worker accepts (3: an old worker, no fallbacks). */
 		maxCandidates = 3,
 	} = {},
@@ -63,11 +65,16 @@ async function setup(
 		return null;
 	};
 	const outageEnd = Date.now() + networkOutageMs;
+	const refusedEnd = Date.now() + refusedMs;
 	const transport: Transport = async (plan, sink, signal): Promise<BatchEnd> => {
 		plans.push(plan);
 		if (Date.now() < outageEnd) {
 			await new Promise((r) => setTimeout(r, 20));
 			return { kind: "error", message: "network: fetch failed", bytes: 0 };
+		}
+		if (Date.now() < refusedEnd) {
+			await new Promise((r) => setTimeout(r, 5));
+			return { kind: "refused", status: 429, message: "http 429", bytes: 0 };
 		}
 		// Like the worker: candidates in order, the first that unchokes wins;
 		// those after it never get a turn.
@@ -500,5 +507,39 @@ describe("Scheduler", { timeout: 30_000 }, () => {
 		const next = verifiedOrder.slice(verifiedBefore).filter((p) => p > 1 && p < 46);
 		expect(next.slice(0, 2).every((p) => p >= 36), `${next}`).toBe(true);
 		expect(took).toBeLessThan(10_000);
+	});
+
+	it("with fallbacks, doesn't leave slots idle waiting for the one quick peer", async () => {
+		// Every piece is urgent (16 MiB file). One quick peer, busy crawling;
+		// ten seeds that unchoke on a timer (seedbox Transmission).
+		const peers: Record<string, Behaviour> = { "1.1.1.1:1": "crawl" };
+		for (let i = 0; i < 10; i++) peers[`10.0.0.${i}:1`] = "transmission";
+		const { scheduler } = await setup(peers, { pieceLength: 1 << 20, pieces: 16, maxActive: 24, maxCandidates: 40 });
+		scheduler.start();
+		let peak = 0;
+		const watch = setInterval(() => (peak = Math.max(peak, scheduler.activeBatches)), 5);
+		await new Promise((r) => setTimeout(r, 500));
+		clearInterval(watch);
+		scheduler.stop();
+		expect(peak).toBeGreaterThanOrEqual(5);
+	});
+
+	it("keeps readahead going when pieces are bigger than the default budget", async () => {
+		// 8 MiB pieces: a single piece's buffer is most of the old 12 MiB floor.
+		const { scheduler } = await setup(
+			Object.fromEntries(Array.from({ length: 8 }, (_, i) => [`10.0.0.${i}:1`, "crawl" as Behaviour])),
+			{ pieceLength: 8 << 20, pieces: 8, maxActive: 24, maxCandidates: 40 },
+		);
+		expect(scheduler.inflightBudget).toBeGreaterThanOrEqual(4 * (8 << 20));
+	});
+
+	it("backs off instead of storming a worker that refuses requests", async () => {
+		const many = Object.fromEntries(Array.from({ length: 8 }, (_, i) => [`10.0.0.${i}:1`, "fast" as Behaviour]));
+		const { scheduler, plans } = await setup(many, { maxActive: 16, pieces: 400, refusedMs: 3_000, maxCandidates: 40 });
+		scheduler.start();
+		await new Promise((r) => setTimeout(r, 2_500));
+		scheduler.stop();
+		// Answered in 5 ms each: without a pause this would be thousands.
+		expect(plans.length).toBeLessThan(60);
 	});
 });

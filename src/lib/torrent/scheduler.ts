@@ -84,6 +84,7 @@ export const MAX_INFLIGHT_BYTES = 96 * 1024 * 1024;
  */
 const INFLIGHT_SECONDS = 6;
 const MIN_INFLIGHT_BYTES = 12 * 1024 * 1024;
+const MIN_INFLIGHT_PIECES = 4;
 /**
  * Stealing: judge a batch after this much transfer time, and steal its
  * blocks if it would need longer than the minimum and than STEAL_FACTOR
@@ -241,10 +242,15 @@ export class Scheduler {
 		return this.workBytes;
 	}
 
-	/** Bytes of pieces we may be assembling at once: ~6 s at our rate. */
+	/**
+	 * Bytes of pieces we may be assembling at once: ~6 s at our rate, but
+	 * room for a few whole pieces (multi-file torrents often have 4–16 MiB
+	 * pieces, and every piece being fetched holds its whole buffer).
+	 */
 	get inflightBudget(): number {
-		const cap = this.opts.maxInflightBytes ?? MAX_INFLIGHT_BYTES;
-		return Math.min(cap, Math.max(MIN_INFLIGHT_BYTES, this.rate * INFLIGHT_SECONDS));
+		const pieces = MIN_INFLIGHT_PIECES * this.meta.pieceLength;
+		const cap = Math.max(this.opts.maxInflightBytes ?? MAX_INFLIGHT_BYTES, pieces);
+		return Math.min(cap, Math.max(MIN_INFLIGHT_BYTES, pieces, this.rate * INFLIGHT_SECONDS));
 	}
 
 	private sampleRate(): void {
@@ -444,15 +450,18 @@ export class Scheduler {
 			const share = Math.max(1, Math.floor(peers.length / slots));
 
 			if (urgent) {
-				// Near the cursor, only peers that unchoke within seconds: wait
-				// for a busy one rather than spend 10+ s on a slow unchoker,
-				// unless there's no quick one (a swarm of Transmission seeds).
+				// Near the cursor, peers that unchoke within seconds first.
+				// With an old worker, wait for a busy one rather than spend 10+
+				// s on a slow unchoker (unless there's no quick one: a swarm of
+				// Transmission seeds). With fallbacks, go now: the quick peers
+				// head the fallback list, so one of them takes over when the
+				// lead is slow, and waiting would leave slots idle.
 				const quick = peers.filter(isQuickUnchoker);
 				if (quick.length > 0) peers = quick;
-				else if (swarm.holderFreeSoon(piece, 10_000, true)) continue;
+				else if (this.fallbackRoom === 0 && swarm.holderFreeSoon(piece, 10_000, true)) continue;
 			}
 			const lead = peers[0];
-			const budget = urgent ? this.urgentBudget(lead, piece) : Math.min(this.batchBudget(lead), room);
+			const budget = urgent ? this.urgentBudget(lead, piece, free[0]) : Math.min(this.batchBudget(lead), room);
 			const blocks = this.run(piece, free, lead, budget, urgent);
 			const pieces = [...new Set(blocks.map(([p]) => p))];
 			const others = peers.slice(1).filter((p) => pieces.every((pc) => swarm.hasPiece(p, pc, true)));
@@ -510,10 +519,13 @@ export class Scheduler {
 		return isProven(lead) ? PROVEN_STAGGER_MS : QUICK_STAGGER_MS;
 	}
 
-	private urgentBudget(peer: Peer, piece: number): number {
+	/** For a batch starting at `block` of `piece`. */
+	private urgentBudget(peer: Peer, piece: number, block: number): number {
 		// Until playback could start, stripe the front over several peers
-		// (each uploads at its own pace) rather than wait on one.
-		const nearFront = piece >= this.front && (piece - this.front) * this.meta.pieceLength < FRONT_FIRST_BYTES;
+		// (each uploads at its own pace) rather than wait on one. Measured in
+		// bytes: a big piece is striped for its first MiB only.
+		const fromFront = (piece - this.front) * this.meta.pieceLength + block * BLOCK_SIZE;
+		const nearFront = piece >= this.front && fromFront < FRONT_FIRST_BYTES;
 		const max = this.frontReady ? URGENT_MAX_BLOCKS : nearFront ? FRONT_FIRST_BLOCKS : FRONT_BATCH_BLOCKS;
 		const cap = Math.min(peer.reqq ?? 250, max);
 		if (peer.rate <= 0) return Math.min(URGENT_UNTRIED_BLOCKS, cap);
@@ -850,11 +862,14 @@ export class Scheduler {
 		const swarm = this.opts.swarm;
 		const winner = batch.winner;
 		const elapsed = Date.now() - (batch.firstDataAt || batch.startedAt);
-		if (end.kind === "error") {
-			// Worker or network trouble (a Cloudflare limit, say): not the
-			// peers' fault. Back off globally so we don't hammer it. Requests
-			// in flight together tend to fail together (a dropped connection):
-			// a burst counts once, or it would jump straight to the longest pause.
+		if (end.kind === "error" || end.kind === "refused") {
+			// Worker or network trouble (a Cloudflare limit, say), or a request
+			// the worker won't take (expired tokens, a 429): not the peers'
+			// fault. Back off globally so we don't hammer it: a refusal answers
+			// in milliseconds, and relaunching at once would be a request storm
+			// eating the worker's daily quota. Requests in flight together tend
+			// to fail together (a dropped connection): a burst counts once, or
+			// it would jump straight to the longest pause.
 			if (Date.now() >= this.pausedUntil) {
 				this.workerErrors++;
 				this.pausedUntil = Date.now() + Math.min(500 * 2 ** this.workerErrors, 15_000);

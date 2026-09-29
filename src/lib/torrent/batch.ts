@@ -51,7 +51,7 @@ export type BatchEnd = { bytes: number } & (
 	/** Every candidate failed; reasons per peer. */
 	| { kind: "no_peer"; others: { peer: string; err?: string; hs?: number }[] }
 	/** The worker refused the request (bad token, bad input). */
-	| { kind: "refused"; status: number }
+	| { kind: "refused"; status: number; message: string }
 	/** Network or worker failure (including Cloudflare limit errors). */
 	| { kind: "error"; message: string }
 );
@@ -103,7 +103,11 @@ export function workerTransport(workerUrl: string, meta: Metainfo): Transport {
 				const body = (await res.json().catch(() => ({}))) as { others?: { peer: string; err?: string; hs?: number }[] };
 				return { kind: "no_peer", others: body.others ?? [], bytes };
 			}
-			if (res.status >= 400 && res.status < 500) return { kind: "refused", status: res.status, bytes };
+			if (res.status >= 400 && res.status < 500) {
+				const body = (await res.json().catch(() => ({}))) as { error?: string; detail?: string };
+				const message = `http ${res.status} ${body.error ?? ""}${body.detail ? `: ${body.detail}` : ""}`;
+				return { kind: "refused", status: res.status, message, bytes };
+			}
 			if (!res.ok || !res.body) return { kind: "error", message: `http ${res.status}`, bytes };
 
 			let finished = false;
