@@ -201,13 +201,19 @@
 		if (verifying) return;
 		const value = inputValue.trim();
 		if (!value) return;
-		if (!/^magnet:\?/i.test(value)) {
+		error = search(value);
+	}
+
+	/** Look a magnet up, from home or the video page. Returns why it can't be. */
+	function search(value: string): string | null {
+		const magnet = value.trim();
+		if (!/^magnet:\?/i.test(magnet)) {
 			diagnostics.count("invalid_magnet");
-			error = "Enter a valid magnet link.";
-			return;
+			return "Enter a valid magnet link.";
 		}
-		diagnostics.count("magnet_submitted");
-		runVerification(value, null, { push: true });
+		diagnostics.count(step === "view" ? "magnet_submitted_from_video" : "magnet_submitted");
+		runVerification(magnet, null, { push: true });
+		return null;
 	}
 
 	function navigate(params: { magnet: string; file?: number } | "saved" | null) {
@@ -256,6 +262,8 @@
 			infoHash={metadata.info_hash}
 			seeders={seedersCount}
 			onSelect={handleSelect}
+			onHome={() => navigate(null)}
+			onSearch={search}
 		/>
 	{/key}
 {:else}

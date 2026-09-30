@@ -21,6 +21,8 @@ function snapshot(over: Partial<EngineSnapshot>): EngineSnapshot {
 		availability: new Uint16Array(PIECES),
 		cursor: 0,
 		front: 0,
+		seeks: 0,
+		wrapped: false,
 		verifiedPieces: 0,
 		verifiedBytes: 0,
 		contiguousBytes: 0,
@@ -114,10 +116,10 @@ describe("RecoveryRecorder", () => {
 	it("times seeks until 4 MiB are ready past them, and counts superseded ones", () => {
 		const { record, at } = setup();
 		at(0, { phase: "recovering" });
-		at(1_000, { cursor: 50, front: 50 });
-		at(1_500, { cursor: 70, front: 70 }); // superseded before ready
-		at(2_000, { cursor: 70, front: 72 });
-		at(3_500, { cursor: 70, front: 74 });
+		at(1_000, { cursor: 50, front: 50, seeks: 1 });
+		at(1_500, { cursor: 70, front: 70, seeks: 2 }); // superseded before ready
+		at(2_000, { cursor: 70, front: 72, seeks: 2 });
+		at(3_500, { cursor: 70, front: 74, seeks: 2 });
 		expect(record.seeks).toMatchObject({ count: 2, abandoned: 1 });
 		expect(record.seeks.readyMs.n).toBe(1);
 		expect(quantile(record.seeks.readyMs, MS_BOUNDS, 0.5)).toBe(2_000);
@@ -128,8 +130,20 @@ describe("RecoveryRecorder", () => {
 	it("ignores seeks once everything is in", () => {
 		const { record, at } = setup();
 		at(0, { phase: "complete", front: PIECES, verifiedPieces: PIECES });
-		at(500, { phase: "complete", cursor: 60, front: PIECES, verifiedPieces: PIECES });
+		at(500, { phase: "complete", cursor: 60, front: PIECES, verifiedPieces: PIECES, seeks: 1 });
 		expect(record.seeks.count).toBe(0);
+	});
+
+	it("counts the front going back to the start as no seek, and a seek it ends as ready", () => {
+		const { record, at } = setup();
+		at(0, { phase: "recovering" });
+		at(1_000, { cursor: 97, front: 97, seeks: 1 });
+		// 97–99 in: the front wraps to the first gap, 1 MiB past the start.
+		at(1_600, { cursor: 0, front: 1, seeks: 1, wrapped: true });
+		at(2_000, { cursor: 0, front: 2, seeks: 1, wrapped: true });
+		expect(record.seeks.count).toBe(1);
+		expect(record.seeks.readyMs.n).toBe(1);
+		expect(quantile(record.seeks.readyMs, MS_BOUNDS, 0.5)).toBe(600);
 	});
 
 	it("tells resumed files apart, and a seek to the end is ready at once", () => {
@@ -141,7 +155,7 @@ describe("RecoveryRecorder", () => {
 			lastPiece: PIECES - 1,
 		}, 40);
 		at(0, { phase: "peers", front: 40, verifiedPieces: 40 });
-		at(500, { cursor: 98, front: 100, verifiedPieces: 42 });
+		at(500, { cursor: 98, front: 100, verifiedPieces: 42, seeks: 1 });
 		expect(record.traits).toMatchObject({ freshStart: false, resumed: 0.4, torrentSize: 3_200_000_000, files: 3 });
 		expect(record.milestones.ready4MiB).toBe(0);
 		expect(record.seeks.readyMs.n).toBe(1);

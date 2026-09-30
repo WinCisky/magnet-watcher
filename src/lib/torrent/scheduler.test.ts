@@ -329,6 +329,56 @@ describe("Scheduler", { timeout: 30_000 }, () => {
 		expect(rest.length).toBeGreaterThan(0);
 		expect(rest.every((p) => p >= 12)).toBe(true);
 	});
+	it("moves the front to where playback waits, a piece early when it jumps ahead", async () => {
+		// 1 MiB pieces: head 0–1, tail 46–47, urgent window 16 pieces.
+		const { scheduler } = await setup({ "1.1.1.1:1": "fast" }, { pieceLength: 1 << 20, pieces: 48 });
+		scheduler.stop(); // plan nothing: only the front matters here
+		scheduler.demand(30); // past the window: a seek ahead
+		expect(scheduler).toMatchObject({ cursor: 29, front: 29 });
+		scheduler.demand(40); // within the window from 29: fetched first anyway
+		scheduler.demand(47); // the tail, likewise
+		expect(scheduler.cursor).toBe(29);
+		scheduler.demand(10); // back, before the front: right there
+		expect(scheduler).toMatchObject({ cursor: 10, front: 10, seeks: 2 });
+		// Ahead again, with the piece before already in: the front is past it.
+		scheduler.markVerified([33]);
+		scheduler.demand(34);
+		expect(scheduler).toMatchObject({ cursor: 33, front: 34 });
+	});
+
+	it("goes back to the start once everything past the cursor is in, at full width", async () => {
+		const peers = Object.fromEntries(Array.from({ length: 10 }, (_, i) => [`10.0.2.${i}:1`, "fast" as Behaviour]));
+		const { scheduler } = await setup(peers, { pieceLength: 1 << 20, pieces: 24, maxActive: 24 });
+		scheduler.stop();
+		scheduler.markVerified([...Array(24).keys()].filter((p) => p !== 2 && p !== 5));
+		// From the start, 2 MiB are in: playback could be waiting.
+		expect(scheduler).toMatchObject({ cursor: 0, front: 2, wrapped: false });
+		expect(scheduler.concurrency).toBe(6);
+		// A seek where everything to the end is in: straight back to the start,
+		// and nobody's waiting on the gaps.
+		scheduler.setCursor(10);
+		expect(scheduler).toMatchObject({ cursor: 0, front: 2, wrapped: true, seeks: 1 });
+		expect(scheduler.concurrency).toBe(20);
+		// A seek to the start after that is a seek again.
+		scheduler.setCursor(0);
+		expect(scheduler).toMatchObject({ cursor: 0, front: 2, wrapped: false, seeks: 2 });
+		expect(scheduler.concurrency).toBe(6);
+	});
+
+	it("after a seek, recovers to the end, then goes on from the start", async () => {
+		const { scheduler, verifiedOrder } = await setup(
+			{ "1.1.1.1:1": "slow", "2.2.2.2:2": "slow" },
+			{ pieceLength: 1 << 20, pieces: 24 },
+		);
+		scheduler.setCursor(12);
+		scheduler.start();
+		await until(() => scheduler.complete, 30_000);
+		scheduler.stop();
+		// It wrapped before the end (once complete, the cursor stays put).
+		expect(scheduler).toMatchObject({ cursor: 0, wrapped: true, seeks: 1 });
+		expect(verifiedOrder.slice(-1)[0]).toBeLessThan(12);
+	});
+
 	it("groups small pieces into multi-piece urgent batches", async () => {
 		// 32 KiB pieces (2 blocks): one piece per request would be all setup.
 		const { scheduler, plans } = await setup({ "1.1.1.1:1": "fast" }, { pieces: 60 });

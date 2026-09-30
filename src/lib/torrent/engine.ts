@@ -39,6 +39,10 @@ export interface EngineSnapshot {
 	cursor: number;
 	/** First unverified piece at or after the cursor. */
 	front: number;
+	/** Times the cursor was moved (seeks, reads playback waited on). */
+	seeks: number;
+	/** The cursor went back to the start by itself, all past it being in. */
+	wrapped: boolean;
 	verifiedPieces: number;
 	verifiedBytes: number;
 	contiguousBytes: number;
@@ -238,14 +242,11 @@ export class RecoveryEngine {
 	}
 
 	/**
-	 * A read waits for `piece`: unless it's among what's fetched first
-	 * anyway, playback needs it next (a seek, a container index at the end
-	 * of the file): move the front there.
+	 * A read waits for `piece`: playback needs it next (a seek, a container
+	 * index at the end of the file). The scheduler moves the front there.
 	 */
 	private demand(piece: number): void {
-		const scheduler = this.scheduler;
-		if (this.stopped || !scheduler || scheduler.isVerified(piece) || scheduler.isUrgent(piece)) return;
-		scheduler.setCursor(piece);
+		if (!this.stopped) this.scheduler?.demand(piece);
 	}
 
 	/** A verified piece is gone from storage (refused, or evicted): fetch it again. */
@@ -358,6 +359,8 @@ export class RecoveryEngine {
 			availability: this.availability.length === count ? this.availability : new Uint16Array(count),
 			cursor: scheduler?.cursor ?? 0,
 			front: scheduler?.front ?? 0,
+			seeks: scheduler?.seeks ?? 0,
+			wrapped: scheduler?.wrapped ?? false,
 			verifiedPieces: scheduler?.verifiedCount ?? 0,
 			verifiedBytes,
 			contiguousBytes: scheduler?.contiguousFromStart() ?? 0,

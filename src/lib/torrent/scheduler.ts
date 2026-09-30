@@ -2,7 +2,9 @@
 //
 // Priority: the file's first pieces (container header), its last pieces
 // (MP4 `moov`, MKV cues), then everything from the cursor to the end, then
-// the rest. `setCursor` moves that sequential front (seeking).
+// the rest. `setCursor` moves that sequential front (seeking), and `demand`
+// moves it to where playback waits. Once everything from the cursor to the
+// end is in, the cursor goes back to the file's start, to fill the gaps.
 //
 // Every worker request pays for a connection, handshake and unchoke
 // (0.2–1 s), so batches are contiguous runs of blocks sized to the peer's
@@ -211,6 +213,13 @@ export class Scheduler {
 	cursor: number;
 	/** First unverified piece at or after the cursor: where playback would stall. */
 	front: number;
+	/** Times the cursor was moved (seeks, reads playback waits on). */
+	seeks = 0;
+	/**
+	 * The cursor went back to the start by itself: everything past where it
+	 * was is in, and nothing is waiting for what's left.
+	 */
+	wrapped = false;
 	requests = 0;
 	hashFailures = 0;
 	storeErrors = 0;
@@ -306,9 +315,13 @@ export class Scheduler {
 		return this.frontReady ? full : Math.min(full, FRONT_ACTIVE);
 	}
 
-	/** Enough is verified from the cursor on for playback to start. */
+	/** Enough is verified from the cursor on for playback to start (or it's filling gaps). */
 	get frontReady(): boolean {
-		return this.front > this.last || (this.front - this.cursor) * this.meta.pieceLength >= FRONT_READY_BYTES;
+		return (
+			this.wrapped ||
+			this.front > this.last ||
+			(this.front - this.cursor) * this.meta.pieceLength >= FRONT_READY_BYTES
+		);
 	}
 
 	/** Also restarts after `stop` (a piece to fetch again, see `forget`). */
@@ -341,10 +354,20 @@ export class Scheduler {
 		this.verified[piece - this.first] = 0;
 		this.verifiedCount--;
 		if (piece >= this.cursor && piece < this.front) this.front = piece;
+		// Past the end already: the cursor wraps round to the start.
+		if (this.front > this.last) this.advanceFront();
 		if (!this.stopped) this.tick();
 	}
 
 	private advanceFront(): void {
+		while (this.front <= this.last && this.isVerified(this.front)) this.front++;
+		// Everything from the cursor to the end is in: go on from the start.
+		// Not a seek: nothing is cancelled (the order had already come round
+		// to these pieces), and no front mode (nobody's waiting to play).
+		if (this.front <= this.last || this.cursor === this.first || this.complete) return;
+		this.cursor = this.first;
+		this.front = this.first;
+		this.wrapped = true;
 		while (this.front <= this.last && this.isVerified(this.front)) this.front++;
 	}
 
@@ -352,13 +375,32 @@ export class Scheduler {
 		return this.verified[piece - this.first] === 1;
 	}
 
+	/**
+	 * Playback waits for `piece`. Unless it's fetched first anyway, move the
+	 * front there: a seek back, or a read before the front, starts at the
+	 * piece; a seek ahead, past the front, one piece before it, so what's
+	 * just before the new position comes in with it.
+	 */
+	demand(piece: number): void {
+		if (piece < this.first || piece > this.last || this.isVerified(piece) || this.isUrgent(piece)) return;
+		this.setCursor(piece > this.front ? piece - 1 : piece);
+	}
+
 	/** Move the sequential front (e.g. to where the viewer seeks). */
 	setCursor(piece: number): void {
 		const cursor = Math.min(this.last, Math.max(this.first, piece));
-		if (cursor === this.cursor) return;
+		if (cursor === this.cursor && !this.wrapped) return;
+		this.seeks++;
+		this.wrapped = false;
 		this.cursor = cursor;
 		this.front = this.cursor;
 		this.advanceFront();
+		// All in from there to the end: the front went back to the start, and
+		// with nobody waiting, what's running is as good as anything.
+		if (this.wrapped) {
+			this.tick();
+			return;
+		}
 		// Requests for the region we left would keep the slots, bandwidth
 		// and memory budget the new front needs: cancel them, and drop their
 		// half-received pieces (the order comes back to them much later).

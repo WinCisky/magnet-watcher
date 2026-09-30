@@ -1,7 +1,9 @@
 <script lang="ts">
 	import { onMount, tick } from "svelte";
 	import LoaderCircleIcon from "@lucide/svelte/icons/loader-circle";
+	import HouseIcon from "@lucide/svelte/icons/house";
 	import ListVideoIcon from "@lucide/svelte/icons/list-video";
+	import SearchIcon from "@lucide/svelte/icons/search";
 	import XIcon from "@lucide/svelte/icons/x";
 	import { Button } from "$lib/components/ui/button/index.js";
 	import { formatBytes } from "$lib/magnet/files";
@@ -17,6 +19,7 @@
 	import { LEGEND, PIECE_COLORS, CURSOR_COLOR } from "$lib/torrent/palette";
 	import FileName from "./file-name.svelte";
 	import FileTree from "./file-tree.svelte";
+	import MagnetForm from "./magnet-form.svelte";
 	import PieceMap from "./piece-map.svelte";
 	import PieceStrip from "./piece-strip.svelte";
 
@@ -30,6 +33,8 @@
 		infoHash,
 		seeders,
 		onSelect,
+		onHome,
+		onSearch,
 	}: {
 		file: TorrentFile;
 		fileIndex: number;
@@ -42,10 +47,16 @@
 		infoHash: string;
 		seeders: number;
 		onSelect: (index: number) => void;
+		onHome: () => void;
+		/** Look up another magnet; returns why it can't be. */
+		onSearch: (magnet: string) => string | null;
 	} = $props();
 
 	const folders = $derived(file.path.split("/").slice(0, -1).join(" / "));
 	const baseName = $derived(file.path.split("/").at(-1) ?? file.path);
+
+	const barButton =
+		"inline-flex items-center rounded-md border border-white/20 text-sm text-white/80 transition-colors hover:bg-white/10 hover:text-white";
 
 	let picker: HTMLDialogElement | undefined = $state();
 	let pickerOpen = $state(false);
@@ -64,6 +75,25 @@
 	function pick(index: number) {
 		picker?.close();
 		if (index !== fileIndex) onSelect(index);
+	}
+
+	let search: HTMLDialogElement | undefined = $state();
+	let searchOpen = $state(false);
+	let searchValue = $state("");
+	let searchError: string | null = $state(null);
+
+	function openSearch() {
+		if (!search) return;
+		diagnostics.count("video_search_opened");
+		searchError = null;
+		searchOpen = true;
+		search.showModal();
+	}
+
+	function submitSearch() {
+		if (!searchValue.trim()) return;
+		searchError = onSearch(searchValue);
+		if (!searchError) search?.close();
 	}
 
 	let snapshot: EngineSnapshot | null = $state.raw(null);
@@ -143,21 +173,30 @@
 
 <div class="fixed inset-0 z-[60] flex flex-col overflow-y-auto bg-black text-white">
 	<div class="mx-auto flex w-full max-w-5xl flex-1 flex-col gap-5 px-4 pt-4 pb-8">
-		{#if files.length > 1}
-			<div>
-				<button
-					type="button"
-					onclick={openPicker}
-					class="inline-flex items-center gap-1.5 rounded-md border border-white/20 px-2.5 py-1.5 text-sm text-white/80 transition-colors hover:bg-white/10 hover:text-white"
-				>
+		<div class="flex items-center gap-2">
+			<button type="button" onclick={onHome} aria-label="Home" title="Home" class="{barButton} size-8 justify-center">
+				<HouseIcon class="size-4" />
+			</button>
+			{#if files.length > 1}
+				<button type="button" onclick={openPicker} class="{barButton} gap-1.5 px-2.5 py-1.5">
 					<ListVideoIcon class="size-4" />
 					Other videos
 					<span class="text-white/50 tabular-nums">{files.length}</span>
 				</button>
-			</div>
-		{/if}
+			{/if}
+			<button
+				type="button"
+				onclick={openSearch}
+				aria-label="Search another magnet"
+				title="Search another magnet"
+				class="{barButton} ml-auto size-8 justify-center"
+			>
+				<SearchIcon class="size-4" />
+			</button>
+		</div>
 
-		<div class="text-center">
+		<!-- On wider screens the title gets some room from the top bar. -->
+		<div class="text-center md:mt-6">
 			{#if folders}
 				<p class="text-sm text-white/60"><FileName name={folders} /></p>
 			{/if}
@@ -281,5 +320,25 @@
 				</div>
 			{/if}
 		</div>
+	</div>
+</dialog>
+
+<dialog
+	bind:this={search}
+	onclose={() => (searchOpen = false)}
+	onclick={(e) => e.target === search && search.close()}
+	aria-label="Search another magnet"
+	class="dark bg-background text-foreground m-auto w-[min(28rem,calc(100vw-2rem))] max-w-none rounded-lg border p-0 backdrop:bg-black/70"
+>
+	<div class="flex items-center gap-2 border-b p-4">
+		<h2 class="flex-1 font-medium">Search another magnet</h2>
+		<Button variant="ghost" size="icon-sm" aria-label="Close" onclick={() => search?.close()}>
+			<XIcon />
+		</Button>
+	</div>
+	<div class="p-4">
+		{#if searchOpen}
+			<MagnetForm bind:value={searchValue} error={searchError} onSubmit={submitSearch} />
+		{/if}
 	</div>
 </dialog>

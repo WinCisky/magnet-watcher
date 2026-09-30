@@ -4,7 +4,8 @@ Paste a magnet link, pick a video file, and the page recovers the file's
 pieces from the BitTorrent swarm, verifying each one in the browser, and
 plays the video while it downloads. Recovery is sequential (the file's head
 and tail first, then in order from a movable front), and the player moves
-that front to wherever playback needs data.
+that front to wherever playback needs data. Once everything past the front
+is in, the front goes back to the file's start to fill the gaps.
 
 - **Choosing a video.** A magnet's videos are shown as a folder tree (like
   `tree`): folders first, episodes in number order, folders holding a single
@@ -12,7 +13,8 @@ that front to wherever playback needs data.
   videos, a filter box matches every typed word against the full path. Names
   are never cut off; they wrap at dots, dashes and slashes. On the video
   page, **Other videos** opens the same tree to switch to another video of
-  the torrent.
+  the torrent. The house icon at its top goes back home, and the search
+  icon looks up another magnet.
 - **Saved videos.** Every video opened is saved in the browser as it's
   recovered. **Saved**, top-left of the home page (`?saved`), lists them,
   most recent first:
@@ -63,6 +65,10 @@ that front to wherever playback needs data.
   - Peers that crawl have their blocks handed to others.
   - Peers that unchoke on a timer (Transmission) are given a longer wait
     instead of being marked as failures.
+  - Once everything from the front to the file's end is in, the front goes
+    back to the file's start and fills the gaps from there. That isn't a
+    seek: nothing is cancelled, and requests run at full width, since
+    playback isn't waiting.
 
   Verified pieces are stored in Cache Storage (one cache per torrent, with a
   record of the files opened from it: `src/lib/torrent/library.ts`), so a
@@ -84,7 +90,9 @@ To see every worker request in the browser console, run
 The video page has a player above the recovery details. Press play once the
 video's header is read (a few MiB from the file's start or end). A read of
 data that isn't in yet waits for its piece and moves the recovery front
-there. So seeking in the player, playing past the front, or a container
+there. When the read jumps ahead of the front (a seek ahead), the front
+starts one piece earlier, so what's just before the new position comes in
+too. So seeking in the player, playing past the front, or a container
 index at the end of the file all steer recovery. The piece strip at the
 bottom marks where playback last read.
 

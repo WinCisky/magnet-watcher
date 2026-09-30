@@ -224,7 +224,8 @@ export class RecoveryRecorder implements EngineObserver {
 	private stallFrom: number | null = null;
 	private windowFrom: number | null = null;
 	private windowBytes = 0;
-	private cursor: number | null = null;
+	/** The engine's seek count at the last snapshot. */
+	private seeks: number | null = null;
 	private seekFrom: number | null = null;
 
 	constructor(
@@ -366,14 +367,16 @@ export class RecoveryRecorder implements EngineObserver {
 		}
 		if (s.verifiedPieces > this.baseline) this.mark("firstPiece", at);
 		const last = s.firstPiece + s.states.length - 1;
-		const ahead = s.front > last ? Infinity : (s.front - s.cursor) * s.pieceLength;
+		// Wrapped: the front went back to the start with everything past the
+		// seek in (the wrap itself is no seek).
+		const ahead = s.front > last || s.wrapped ? Infinity : (s.front - s.cursor) * s.pieceLength;
 		// Seeks once everything is in measure nothing.
-		if (this.cursor !== null && s.cursor !== this.cursor && s.phase !== "complete") {
+		if (this.seeks !== null && s.seeks !== this.seeks && s.phase !== "complete") {
 			r.seeks.count++;
 			if (this.seekFrom !== null) r.seeks.abandoned++;
 			this.seekFrom = now;
 		}
-		this.cursor = s.cursor;
+		this.seeks = s.seeks;
 		if (this.seekFrom !== null && ahead >= SEEK_READY_BYTES) {
 			add(r.seeks.readyMs, MS_BOUNDS, now - this.seekFrom);
 			this.seekFrom = null;
