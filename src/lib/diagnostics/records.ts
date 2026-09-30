@@ -31,7 +31,7 @@ export interface VisitRecord {
 	env: Environment;
 	/** What the user did: "magnet_submitted", "file_picked"… */
 	flow: Counts;
-	/** The metadata API: magnet link → file list. */
+	/** magnet-seeders' /files: magnet link → file list (the key predates it). */
 	metadataApi: Timed;
 	/** magnet-seeders' /peers: the seeder count checked before choosing. */
 	seedersCount: Timed;

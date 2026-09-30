@@ -17,34 +17,49 @@ export interface PeersResult {
 	count: number;
 }
 
-const METADATA_API_URL = "https://magnet-metadata-api.darklyn.org/api/v1/metadata";
 export const SEEDERS_API_URL: string =
 	import.meta.env.PUBLIC_SEEDERS_URL ?? "https://magnet-seeders.opentrust.it";
 export const WORKER_API_URL: string =
 	import.meta.env.PUBLIC_WORKER_URL ?? "https://magnet-worker.opentrust.it";
 
-export async function fetchMetadata(
-	magnetUri: string,
-	signal?: AbortSignal
-): Promise<TorrentMetadata> {
-	const res = await fetch(METADATA_API_URL, {
-		method: "POST",
-		headers: { "Content-Type": "application/json" },
-		body: JSON.stringify({ magnet_uri: magnetUri }),
-		signal,
-	});
-
-	if (!res.ok) {
-		throw new Error(`Metadata request failed (${res.status})`);
-	}
-
+/**
+ * A magnet's files, from magnet-seeders' `/files`: name, total size, and
+ * every file's path, size and offset, largest first (a file's place in the
+ * list is its index in `?file=` links and saved videos). It may first have
+ * to fetch the info dict from peers: a few seconds for a torrent it hasn't
+ * seen.
+ */
+export async function fetchMetadata(magnetUri: string, signal?: AbortSignal): Promise<TorrentMetadata> {
+	const url = new URL("/files", SEEDERS_API_URL);
+	url.searchParams.set("magnet", magnetUri);
+	const res = await reach(url, signal);
+	if (!res.ok) throw new Error(`Couldn't read the torrent's files: ${await reason(res)}`);
 	const data = await res.json();
-
 	if (!data || !Array.isArray(data.files) || typeof data.info_hash !== "string") {
-		throw new Error("Unexpected metadata response");
+		throw new Error("Unexpected answer from magnet-seeders");
 	}
-
 	return data as TorrentMetadata;
+}
+
+/** fetch, with a message that says who couldn't be reached. */
+async function reach(url: URL, signal?: AbortSignal): Promise<Response> {
+	try {
+		return await fetch(url, { signal });
+	} catch (e) {
+		if (signal?.aborted) throw e;
+		throw new Error("Couldn't reach magnet-seeders; check the connection and try again");
+	}
+}
+
+/** magnet-seeders' `{ "error": … }`, else the status. */
+async function reason(res: Response): Promise<string> {
+	try {
+		const body = await res.json();
+		if (typeof body?.error === "string") return body.error;
+	} catch {
+		// Not JSON.
+	}
+	return `HTTP ${res.status}`;
 }
 
 export async function fetchSeeders(infoHash: string, signal?: AbortSignal): Promise<number> {

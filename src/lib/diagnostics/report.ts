@@ -66,7 +66,7 @@ export function buildReport(input: ReportInput) {
 	const recoveries = visits.flatMap((v) => v.recoveries);
 	const health: Record<string, PartHealth> = {
 		metadataApi: requests(
-			"Torrent lookup (magnet → file list, metadata API)",
+			"Torrent lookup (magnet → file list, magnet-seeders /files)",
 			mergeTimed(visits.map((v) => v.metadataApi)),
 			THRESHOLDS.metadataApi,
 		),

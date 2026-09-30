@@ -29,6 +29,9 @@ that front to wherever playback needs data.
 
 - **[magnet-seeders](https://github.com/WinCisky/magnet-seeders)** (VPS)
   provides:
+  - `/files`: the magnet's files (name, size, offset), read from its info
+    dict, largest first. A file's place in this list is its index in
+    `?file=` links and saved videos.
   - `/swarm`: the peers, probed over TCP (reachable, seed or bitfield,
     unchoke speed), each with a signed token. It answers as soon as the
     first peers unchoke a probe (`complete: false`); the page polls every
@@ -109,7 +112,7 @@ bottom marks where playback last read.
   responses.
   - The first visit reloads once so the worker can take over.
   - Requests to other origins pass through untouched; they must allow
-    CORS, as the metadata API, magnet-seeders and the worker do. Anything
+    CORS, as magnet-seeders and the worker do. Anything
     new loaded from another origin (images, fonts) must allow CORS or send
     `Cross-Origin-Resource-Policy`.
   - If isolation fails (a hard reload bypasses the worker), the Subtitles
@@ -162,7 +165,8 @@ Nothing is ever sent anywhere. The code is in `src/lib/diagnostics/`.
 
 - **Visits.** One record per page load that did something:
   - what the user did (magnet submitted, file picked, saved video opened…);
-  - the metadata API and `/peers` requests: outcomes, latency and errors;
+  - magnet-seeders' `/files` (the magnet's file list) and `/peers`
+    requests: outcomes, latency and errors;
   - uncaught errors;
   - the browser, OS and device class.
 - **Recoveries.** One record per video opened:
