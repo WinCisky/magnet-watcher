@@ -14,6 +14,38 @@ import MagnetFlow from '../lib/components/magnet-flow.svelte';
 		<meta name="generator" content={Astro.generator} />
 		<title>Magnet Watcher</title>
 		<script is:inline set:html={createInitialModeExpression()} />
+		<!--
+			Cross-origin isolation (see public/coi-sw.js). Once its service
+			worker controls the page, responses carry COOP/COEP; the first visit
+			reloads once to get there (never twice in a session).
+		-->
+		<script is:inline define:vars={{ worker: `${import.meta.env.BASE_URL}/coi-sw.js` }}>
+			(() => {
+				const key = "mw-coi-reload";
+				try {
+					if (window.crossOriginIsolated) sessionStorage.removeItem(key);
+				} catch {}
+				if (window.crossOriginIsolated || !window.isSecureContext || !("serviceWorker" in navigator)) return;
+				const reload = () => {
+					try {
+						if (sessionStorage.getItem(key)) return;
+						sessionStorage.setItem(key, "1");
+					} catch {
+						return;
+					}
+					location.reload();
+				};
+				navigator.serviceWorker
+					.register(worker)
+					.then((registration) => {
+						// Controlled yet not isolated: this browser can't; don't loop.
+						if (navigator.serviceWorker.controller) return;
+						if (registration.active) reload();
+						else navigator.serviceWorker.addEventListener("controllerchange", reload);
+					})
+					.catch(() => {});
+			})();
+		</script>
 	</head>
 	<body>
 		<div class="fixed top-4 right-4 z-50">

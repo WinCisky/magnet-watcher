@@ -12,6 +12,8 @@ export interface Environment {
 	/** Network Information API ("4g", "3g"…), where available. */
 	connection: string | null;
 	downlinkMbps: number | null;
+	/** Cross-origin isolated (public/coi-sw.js): the player's threads and subtitles need it. */
+	isolated?: boolean;
 }
 
 interface NavigatorExtras {
@@ -34,6 +36,7 @@ export function detectEnvironment(): Environment {
 		memoryGb: nav.deviceMemory ?? null,
 		connection: nav.connection?.effectiveType ?? null,
 		downlinkMbps: nav.connection?.downlink ?? null,
+		isolated: globalThis.crossOriginIsolated === true,
 	};
 }
 

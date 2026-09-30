@@ -8,18 +8,20 @@
 	import MaximizeIcon from "@lucide/svelte/icons/maximize";
 	import MinimizeIcon from "@lucide/svelte/icons/minimize";
 	import CaptionsIcon from "@lucide/svelte/icons/captions";
+	import CaptionsOffIcon from "@lucide/svelte/icons/captions-off";
 	import AudioLinesIcon from "@lucide/svelte/icons/audio-lines";
 	import LoaderCircleIcon from "@lucide/svelte/icons/loader-circle";
 	import CircleAlertIcon from "@lucide/svelte/icons/circle-alert";
 	import * as DropdownMenu from "$lib/components/ui/dropdown-menu/index.js";
 	import { VideoPlayer, type PlayerEvent, type PlayerState } from "./player";
-	import type { ByteSource } from "./source";
+	import type { ByteSource, SubtitleSource } from "./source";
 	import { formatTime } from "./time";
 
 	let {
 		source,
 		name,
 		available = [],
+		subtitles = [],
 		onEvent,
 	}: {
 		source: ByteSource;
@@ -27,6 +29,8 @@
 		name: string;
 		/** Parts of the file already in, as [start, end] fractions of its bytes. */
 		available?: readonly (readonly [number, number])[];
+		/** Subtitle files besides the video's own, fetched when picked. */
+		subtitles?: SubtitleSource[];
 		onEvent?: (event: PlayerEvent) => void;
 	} = $props();
 
@@ -60,7 +64,7 @@
 
 	onMount(() => {
 		if (!stage) return;
-		player = new VideoPlayer({ container: stage, source, name, onChange: (next) => (s = next), onEvent });
+		player = new VideoPlayer({ container: stage, source, name, subtitles, onChange: (next) => (s = next), onEvent });
 		const onFullscreen = () => (fullscreen = document.fullscreenElement === frame);
 		document.addEventListener("fullscreenchange", onFullscreen);
 		return () => {
@@ -151,6 +155,9 @@
 				break;
 			case "m":
 				player?.setMuted(!s.muted);
+				break;
+			case "c":
+				player?.toggleSubtitles();
 				break;
 			default:
 				return;
@@ -322,7 +329,7 @@
 								</button>
 							{/snippet}
 						</DropdownMenu.Trigger>
-						<DropdownMenu.Content align="end" portalProps={{ to: frame }} class="dark max-h-72 w-56">
+						<DropdownMenu.Content align="end" portalProps={{ to: frame }} class="dark [color-scheme:dark] max-h-72 w-64">
 							<DropdownMenu.Label>Audio</DropdownMenu.Label>
 							<DropdownMenu.RadioGroup
 								value={String(s.audioId)}
@@ -330,7 +337,8 @@
 							>
 								{#each s.audioTracks as track (track.id)}
 									<DropdownMenu.RadioItem value={String(track.id)}>
-										{track.label} <span class="text-muted-foreground ml-auto text-xs uppercase">{track.codec}</span>
+										<span class="min-w-0 flex-1 wrap-anywhere">{track.label}</span>
+										<span class="text-muted-foreground shrink-0 text-xs">{track.detail}</span>
 									</DropdownMenu.RadioItem>
 								{/each}
 							</DropdownMenu.RadioGroup>
@@ -339,24 +347,63 @@
 				{/if}
 
 				{#if s.subtitleTracks.length > 0}
+					{@const own = s.subtitleTracks.filter((t) => !t.external)}
+					{@const files = s.subtitleTracks.filter((t) => t.external)}
 					<DropdownMenu.Root onOpenChange={(open) => (menuOpen = open)}>
 						<DropdownMenu.Trigger>
 							{#snippet child({ props })}
-								<button {...props} type="button" class="control" aria-label="Subtitles">
-									<CaptionsIcon class="size-5 {s && s.subtitleId >= 0 ? '' : 'opacity-60'}" />
+								<button
+									{...props}
+									type="button"
+									class="control"
+									aria-label={s?.subtitle ? "Subtitles (on)" : "Subtitles (off)"}
+									title="Subtitles (c)"
+								>
+									{#if s?.subtitleLoading}
+										<LoaderCircleIcon class="size-5 animate-spin" />
+									{:else if s?.subtitle}
+										<CaptionsIcon class="size-5" />
+									{:else}
+										<CaptionsOffIcon class="size-5 opacity-70" />
+									{/if}
 								</button>
 							{/snippet}
 						</DropdownMenu.Trigger>
-						<DropdownMenu.Content align="end" portalProps={{ to: frame }} class="dark max-h-72 w-56">
+						<DropdownMenu.Content align="end" portalProps={{ to: frame }} class="dark [color-scheme:dark] max-h-80 w-72">
 							<DropdownMenu.Label>Subtitles</DropdownMenu.Label>
+							{#if s.subtitlesBlocked}
+								<p class="px-2 pb-1.5 text-xs text-amber-300">
+									Subtitles can't show until the page is reloaded.
+								</p>
+							{/if}
+							{#if s.subtitleError}
+								<p class="px-2 pb-1.5 text-xs text-red-400 wrap-anywhere">{s.subtitleError}</p>
+							{/if}
 							<DropdownMenu.RadioGroup
-								value={String(s.subtitleId)}
-								onValueChange={(v) => void player?.selectSubtitle(Number(v))}
+								value={s.subtitle ?? "off"}
+								onValueChange={(v) => player?.selectSubtitle(v === "off" ? null : v)}
 							>
-								<DropdownMenu.RadioItem value="-1">Off</DropdownMenu.RadioItem>
-								{#each s.subtitleTracks as track (track.id)}
-									<DropdownMenu.RadioItem value={String(track.id)}>{track.label}</DropdownMenu.RadioItem>
+								<DropdownMenu.RadioItem value="off">Off</DropdownMenu.RadioItem>
+								{#each own as track (track.key)}
+									<DropdownMenu.RadioItem value={track.key} disabled={!track.supported}>
+										<span class="min-w-0 flex-1 wrap-anywhere">{track.label}</span>
+										<span class="text-muted-foreground shrink-0 text-xs">{track.detail}</span>
+									</DropdownMenu.RadioItem>
 								{/each}
+								{#if files.length > 0}
+									<DropdownMenu.Separator />
+									<DropdownMenu.Label class="text-muted-foreground text-xs font-normal">Subtitle files</DropdownMenu.Label>
+									{#each files as track (track.key)}
+										<DropdownMenu.RadioItem value={track.key}>
+											<span class="min-w-0 flex-1 wrap-anywhere">{track.label}</span>
+											{#if s.subtitleLoading === track.key}
+												<LoaderCircleIcon class="text-muted-foreground size-3.5 shrink-0 animate-spin" />
+											{:else}
+												<span class="text-muted-foreground shrink-0 text-xs">{track.detail}</span>
+											{/if}
+										</DropdownMenu.RadioItem>
+									{/each}
+								{/if}
 							</DropdownMenu.RadioGroup>
 						</DropdownMenu.Content>
 					</DropdownMenu.Root>

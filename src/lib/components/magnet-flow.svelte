@@ -250,6 +250,7 @@
 			file={selectedFile}
 			fileIndex={selectedFileIndex}
 			files={videoFiles}
+			allFiles={metadata.files}
 			torrentName={metadata.name}
 			magnet={currentMagnet}
 			infoHash={metadata.info_hash}

@@ -7,7 +7,10 @@
 	import { formatBytes } from "$lib/magnet/files";
 	import type { TorrentFile } from "$lib/magnet/api";
 	import { RecoveryEngine, type EngineSnapshot } from "$lib/torrent/engine";
+	import { recoverFile } from "$lib/torrent/fetch-file";
 	import { recoveredRanges } from "$lib/torrent/ranges";
+	import { subtitleFilesFor } from "$lib/magnet/subtitles";
+	import type { SubtitleSource } from "$lib/player/source";
 	import VideoPlayer from "$lib/player/video-player.svelte";
 	import { diagnostics } from "$lib/diagnostics/recorder";
 	import { savedProgress, type SavedProgress } from "$lib/torrent/library";
@@ -21,6 +24,7 @@
 		file,
 		fileIndex,
 		files,
+		allFiles,
 		torrentName,
 		magnet,
 		infoHash,
@@ -31,6 +35,8 @@
 		fileIndex: number;
 		/** Every video of the torrent, to switch to another. */
 		files: { file: TorrentFile; index: number }[];
+		/** Everything in the torrent (subtitle files included). */
+		allFiles: TorrentFile[];
 		torrentName: string;
 		magnet: string;
 		infoHash: string;
@@ -96,6 +102,17 @@
 	// lifetime: the parent re-mounts it when they change. The engine exists
 	// before the player mounts: the player reads the file from it.
 	const { engine, recorder } = createEngine();
+	const subtitles = subtitleSources();
+
+	/** The torrent's subtitle files for this video, each recovered when picked. */
+	function subtitleSources(): SubtitleSource[] {
+		return subtitleFilesFor(file, allFiles, files.length).map((s) => ({
+			name: s.file.path.split("/").at(-1) ?? s.file.path,
+			label: s.label,
+			language: s.language,
+			load: (signal) => recoverFile({ infoHash, magnet, file: s.file, signal }),
+		}));
+	}
 
 	function createEngine() {
 		const recorder = diagnostics.recovery({ infoHash, path: file.path, fileSize: file.size, videos: files.length });
@@ -153,7 +170,7 @@
 			</p>
 		</div>
 
-		<VideoPlayer source={engine.stream} name={baseName} {available} onEvent={(e) => recorder.playback(e)} />
+		<VideoPlayer source={engine.stream} name={baseName} {available} {subtitles} onEvent={(e) => recorder.playback(e)} />
 
 		<div class="mx-auto flex w-full max-w-3xl flex-col gap-5">
 			{#if busy}

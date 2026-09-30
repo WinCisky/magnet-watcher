@@ -92,7 +92,7 @@ bottom marks where playback last read.
   | Containers | MKV/WebM, MP4/MOV, AVI, MPEG-TS |
   | Video | H.264, HEVC (8 and 10 bit), MPEG-4 Part 2 (Xvid, DivX), DivX 3, MPEG-2, VP9, AV1 |
   | Audio | AAC, MP3, AC3, EAC3, DTS, Opus, Vorbis, FLAC, PCM |
-  | Extras | several audio tracks; embedded SRT and ASS subtitles |
+  | Extras | several audio tracks; text subtitles (SRT, ASS/SSA, WebVTT, TTML), in the video or as files in the torrent |
 
   There are no decoders for TrueHD, MP2 audio, WMV or RealVideo.
 - **Decoding.** Built on [libmedia](https://github.com/zhaohappy/libmedia)
@@ -100,12 +100,41 @@ bottom marks where playback last read.
   Chrome's own player (MSE) when the codecs are ones Chrome plays.
   Otherwise it decodes with FFmpeg compiled to wasm, one decoder per codec,
   fetched only when a video needs it: HEVC on machines without hardware
-  support, DivX/Xvid, and AC3/EAC3/DTS audio. GitHub Pages can't enable
-  cross-origin isolation, so wasm decoding runs single-threaded, and HEVC at
-  1080p and above may drop frames on slower machines. Nothing is re-encoded.
+  support, DivX/Xvid, and AC3/EAC3/DTS audio. Nothing is re-encoded.
+- **Cross-origin isolation.** libmedia needs SharedArrayBuffer to run on
+  real threads. Without it, its workers can't pass subtitles to the page,
+  and wasm decoding is single-threaded. GitHub Pages can't send the
+  COOP/COEP headers that enable it, so `public/coi-sw.js`, a service worker
+  registered in `src/pages/index.astro`, adds them to the site's own
+  responses.
+  - The first visit reloads once so the worker can take over.
+  - Requests to other origins pass through untouched; they must allow
+    CORS, as the metadata API, magnet-seeders and the worker do. Anything
+    new loaded from another origin (images, fonts) must allow CORS or send
+    `Cross-Origin-Resource-Policy`.
+  - If isolation fails (a hard reload bypasses the worker), the Subtitles
+    menu says to reload. The diagnostics record `isolated` in the
+    environment.
 - **Controls.** Seek bar with the downloaded parts shaded (bytes mapped
-  linearly to time, so approximate), volume, audio track and subtitle
-  menus, full screen. Keys: space or `k`, `←`/`→` (10 s), `f`, `m`.
+  linearly to time, so approximate), volume, full screen. Keys: space or
+  `k`, `←`/`→` (10 s), `f`, `m`, and `c` for subtitles on/off.
+- **Audio and subtitles.** With several audio tracks, the **Audio** menu
+  picks one. Tracks are named by language and title, with codec and
+  channels ("Italian · AC3 5.1"). The **Subtitles** menu lists:
+  - **Off**;
+  - the video's own subtitles. Image subtitles (PGS, VobSub) are listed but
+    greyed out, since only text subtitles can be shown;
+  - under **Subtitle files**, the torrent's `.srt/.ass/.ssa/.vtt/.ttml`
+    files for this video. They are recovered only when picked, kept in
+    memory and not saved. A file counts as the video's when:
+    - its name starts with the video's (`Movie.it.srt`);
+    - or it's in a `Subs` folder, under the video's name
+      (`Subs/Show.S01E02/2_English.srt`);
+    - or the torrent has a single video.
+    The language and flags (forced, SDH) come from the file name.
+
+  Subtitles start off unless the video flags one of its tracks as default
+  (or titles one "forced").
 - **Code.** The player and recovery are independent:
   - `src/lib/player/` reads from any `ByteSource` (`source.ts`) and knows
     nothing about torrents;
@@ -145,7 +174,9 @@ Nothing is ever sent anywhere. The code is in `src/lib/diagnostics/`.
     seek to 4 MiB ready, failed piece checks, and storage errors;
   - the player: how it decoded (the browser's player or libmedia's
     decoders) and the codecs, time to read the header and from play to the
-    first picture, waits for data, seek times, decoder stutters, and errors.
+    first picture, waits for data, seek times, decoder stutters, and errors;
+    how many audio tracks, subtitles and subtitle files the video offered,
+    which were picked, and how subtitle file downloads went.
 - **Privacy.** There are no magnet links, file or torrent names, info-hashes
   or IP addresses. Error text is scrubbed of all of them, and sizes are
   rounded. A torrent appears only as a hash salted with a secret that never

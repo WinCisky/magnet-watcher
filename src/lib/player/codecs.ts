@@ -50,8 +50,10 @@ const NAMES: Record<number, string> = {
 	94213: "mov_text",
 	94214: "hdmv_pgs_subtitle",
 	94216: "srt",
+	94225: "srt",
 	94226: "webvtt",
 	94230: "ass",
+	94232: "ttml",
 };
 
 export function codecName(id: number): string {

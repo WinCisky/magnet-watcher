@@ -361,10 +361,28 @@ function playback(recoveries: RecoveryRecord[]): PartHealth {
 	const errors = count((p) => p.error);
 	const modes = count((p) => p.mode);
 	const top = topKey(errors);
+	// Subtitle files fetched from the torrent when picked.
+	const loads = { ok: 0, fail: 0, ms: hist(MS_BOUNDS), errors: {} as Counts };
+	for (const p of opened) {
+		if (!p.subtitleLoads) continue;
+		loads.ok += p.subtitleLoads.ok;
+		loads.fail += p.subtitleLoads.fail;
+		merge(loads.ms, p.subtitleLoads.ms);
+		mergeCounts(loads.errors, p.subtitleLoads.errors);
+	}
+	const changes = { audio: 0, subtitle: 0, external: 0 };
+	for (const p of opened) {
+		changes.audio += p.trackChanges?.audio ?? 0;
+		changes.subtitle += p.trackChanges?.subtitle ?? 0;
+		changes.external += p.trackChanges?.external ?? 0;
+	}
+	const offered = (key: "audio" | "subtitles" | "imageSubtitles" | "external", min = 1) =>
+		opened.filter((p) => (p.tracks?.[key] ?? 0) >= min).length;
 	return {
 		title,
 		status: grade(
 			failShare === 0 &&
+				loads.fail === 0 &&
 				(startP90 ?? 0) <= th.goodStartP90Ms &&
 				waitShare <= th.goodWaitShare &&
 				(perMin ?? 0) <= th.goodStuttersPerMin,
@@ -379,7 +397,8 @@ function playback(recoveries: RecoveryRecord[]): PartHealth {
 			(startP50 !== null ? `; first picture within ${sec(startP50)} for half, ${sec(startP90)} for 90%` : "") +
 			(playedMs > 0 ? `; waited for data ${pct(waitShare)} of ${Math.round(playedMs / 60_000)} min played` : "") +
 			(perMin !== null ? `; ${perMin.toFixed(1)} decoder stutters/min` : "") +
-			(failed.length ? `; ${failed.length} couldn't play (${top})` : ""),
+			(failed.length ? `; ${failed.length} couldn't play (${top})` : "") +
+			(loads.fail ? `; ${loads.fail} of ${loads.ok + loads.fail} subtitle files failed to load (${topKey(loads.errors)})` : ""),
 		details: {
 			opened: opened.length,
 			played: starts.length,
@@ -401,6 +420,19 @@ function playback(recoveries: RecoveryRecord[]): PartHealth {
 			seekP50Ms: quantile(seeks, MS_BOUNDS, 0.5),
 			stuttersPerMin: perMin === null ? null : round(perMin),
 			errors,
+			tracks: {
+				videosWithSeveralAudioTracks: offered("audio", 2),
+				videosWithSubtitles: offered("subtitles"),
+				videosWithImageSubtitles: offered("imageSubtitles"),
+				videosWithSubtitleFiles: offered("external"),
+				picked: changes,
+			},
+			subtitleFiles: {
+				loaded: loads.ok,
+				failed: loads.fail,
+				p50Ms: quantile(loads.ms, MS_BOUNDS, 0.5),
+				errors: loads.errors,
+			},
 		},
 	};
 }

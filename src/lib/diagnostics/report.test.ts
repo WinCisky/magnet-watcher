@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { newPlayback, newRecovery, newVisit, type RecoveryRecord, type VisitRecord } from "./records";
 import { buildReport } from "./report";
-import { MS_BOUNDS, RATE_BOUNDS, add } from "./stats";
+import { MS_BOUNDS, RATE_BOUNDS, add, hist } from "./stats";
 
 const MiB = 1024 * 1024;
 const ENV = { browser: "Chrome 140", os: "Android", mobile: true, cores: 8, memoryGb: 4, connection: "4g", downlinkMbps: 10 };
@@ -155,6 +155,18 @@ describe("buildReport", () => {
 			]),
 		]);
 		expect(broken.health.playback.status).toBe("poor");
+
+		const subtitleTrouble = report([
+			visit([
+				watched((p) => {
+					p.tracks = { audio: 2, subtitles: 0, imageSubtitles: 1, external: 4 };
+					p.subtitleLoads = { ok: 1, fail: 1, ms: hist(MS_BOUNDS), errors: { "Timed out fetching the file": 1 } };
+				}),
+			]),
+		]);
+		expect(subtitleTrouble.health.playback.status).toBe("fair");
+		expect(subtitleTrouble.health.playback.summary).toContain("1 of 2 subtitle files failed to load (Timed out fetching the file)");
+		expect(subtitleTrouble.health.playback.details.tracks).toMatchObject({ videosWithSeveralAudioTracks: 1, videosWithImageSubtitles: 1, videosWithSubtitleFiles: 1 });
 		expect(broken.health.playback.summary).toContain("1 couldn't play (load: open stream failed)");
 	});
 });

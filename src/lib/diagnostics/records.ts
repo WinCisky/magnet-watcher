@@ -152,6 +152,12 @@ export interface PlaybackRecord {
 	videoStutters: number;
 	audioStutters: number;
 	error: string | null;
+	/** What the video offered: audio tracks, subtitles (text / image), subtitle files. */
+	tracks?: { audio: number; subtitles: number; imageSubtitles: number; external: number };
+	/** Tracks the viewer picked. */
+	trackChanges?: { audio: number; subtitle: number; external: number };
+	/** Subtitle files fetched and read. */
+	subtitleLoads?: { ok: number; fail: number; ms: Hist; errors: Counts };
 }
 
 export function newPlayback(): PlaybackRecord {
@@ -168,6 +174,9 @@ export function newPlayback(): PlaybackRecord {
 		videoStutters: 0,
 		audioStutters: 0,
 		error: null,
+		tracks: { audio: 0, subtitles: 0, imageSubtitles: 0, external: 0 },
+		trackChanges: { audio: 0, subtitle: 0, external: 0 },
+		subtitleLoads: { ok: 0, fail: 0, ms: hist(MS_BOUNDS), errors: {} },
 	};
 }
 

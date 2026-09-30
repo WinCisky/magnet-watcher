@@ -24,3 +24,23 @@ export function fixAviFourcc(bytes: Uint8Array, offset: number, length = bytes.l
 		for (let k = i + 24; k < i + 28; k++) if (bytes[k] >= 0x61 && bytes[k] <= 0x7a) bytes[k] -= 0x20;
 	}
 }
+
+/**
+ * A subtitle file as libmedia's parsers want it: UTF-8 (many files are
+ * Windows-1252, or UTF-16 with a byte order mark), "\n" line ends, and a
+ * blank line at the end (its SRT parser drops a last cue without one).
+ */
+export function normalizeSubtitle(bytes: Uint8Array): Uint8Array {
+	let text: string;
+	if (bytes[0] === 0xff && bytes[1] === 0xfe) text = new TextDecoder("utf-16le").decode(bytes);
+	else if (bytes[0] === 0xfe && bytes[1] === 0xff) text = new TextDecoder("utf-16be").decode(bytes);
+	else {
+		try {
+			text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+		} catch {
+			text = new TextDecoder("windows-1252").decode(bytes);
+		}
+	}
+	text = text.replace(/^﻿/, "").replace(/\r\n?/g, "\n").replace(/\s*$/, "\n\n");
+	return new TextEncoder().encode(text);
+}

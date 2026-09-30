@@ -22,7 +22,7 @@ import {
 	type Timed,
 	type VisitRecord,
 } from "./records";
-import { MS_BOUNDS, RATE_BOUNDS, add, bump, coarse, scrub } from "./stats";
+import { MS_BOUNDS, RATE_BOUNDS, add, bump, coarse, hist, scrub } from "./stats";
 
 const FLUSH_MS = 15_000;
 const KEEP_VISITS = 300;
@@ -412,6 +412,27 @@ export class RecoveryRecorder implements EngineObserver {
 			case "error":
 				p.error ??= scrub(`${event.stage}: ${event.message}`, 160);
 				break;
+			case "tracks":
+				p.tracks = { audio: event.audio, subtitles: event.subtitles, imageSubtitles: event.imageSubtitles, external: event.external };
+				break;
+			case "trackChanged": {
+				const changes = (p.trackChanges ??= { audio: 0, subtitle: 0, external: 0 });
+				if (event.kind === "audio") changes.audio++;
+				else if (event.external) changes.external++;
+				else changes.subtitle++;
+				break;
+			}
+			case "subtitleLoad": {
+				const loads = (p.subtitleLoads ??= { ok: 0, fail: 0, ms: hist(MS_BOUNDS), errors: {} });
+				if (event.ok) {
+					loads.ok++;
+					add(loads.ms, MS_BOUNDS, event.ms);
+				} else {
+					loads.fail++;
+					bump(loads.errors, scrub(event.message ?? "failed", 120));
+				}
+				break;
+			}
 			case "stats":
 				// Running totals of this video's player.
 				p.playedMs = Math.max(p.playedMs, Math.round(event.playedMs));

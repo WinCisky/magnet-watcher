@@ -211,6 +211,11 @@ describe("RecoveryRecorder.playback", () => {
 		recorder.playback({ type: "waited", ms: 1_500 });
 		recorder.playback({ type: "seeked", ms: 700 });
 		recorder.playback({ type: "error", stage: "play", message: "decode failed near 10.0.0.2" });
+		recorder.playback({ type: "tracks", audio: 2, subtitles: 1, imageSubtitles: 1, external: 3 });
+		recorder.playback({ type: "trackChanged", kind: "audio", external: false });
+		recorder.playback({ type: "trackChanged", kind: "subtitle", external: true });
+		recorder.playback({ type: "subtitleLoad", ms: 2_500, ok: true });
+		recorder.playback({ type: "subtitleLoad", ms: 90_000, ok: false, message: "Timed out fetching the file" });
 		recorder.playback({ type: "stats", playedMs: 30_000, videoStutters: 1, audioStutters: 0 });
 		recorder.end();
 		recorder.playback({ type: "waited", ms: 9_999 });
@@ -228,6 +233,9 @@ describe("RecoveryRecorder.playback", () => {
 			error: "play: decode failed near <ip>",
 		});
 		expect(record.playback?.waits.n).toBe(1);
+		expect(record.playback?.tracks).toEqual({ audio: 2, subtitles: 1, imageSubtitles: 1, external: 3 });
+		expect(record.playback?.trackChanges).toEqual({ audio: 1, subtitle: 0, external: 1 });
+		expect(record.playback?.subtitleLoads).toMatchObject({ ok: 1, fail: 1, errors: { "Timed out fetching the file": 1 } });
 		expect(record.playback?.seeks.n).toBe(1);
 	});
 });

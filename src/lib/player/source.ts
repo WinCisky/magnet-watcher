@@ -11,3 +11,17 @@ export interface ByteSource {
 	 */
 	read(offset: number, into: Uint8Array, signal?: AbortSignal): Promise<number>;
 }
+
+/**
+ * A subtitle file from outside the video (a torrent ships many next to
+ * it), fetched only when the viewer picks it.
+ */
+export interface SubtitleSource {
+	/** File name: its extension picks the parser (srt, ass, ssa, vtt, ttml). */
+	name: string;
+	/** "Italian", "English · SDH". */
+	label: string;
+	/** BCP 47, when known. */
+	language: string | null;
+	load(signal: AbortSignal): Promise<Uint8Array>;
+}
