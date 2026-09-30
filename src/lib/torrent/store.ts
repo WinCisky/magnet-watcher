@@ -82,3 +82,24 @@ export class MemoryPieceStore implements PieceStore {
 		return this.pieces.get(piece);
 	}
 }
+
+/**
+ * The store, with each piece readable from memory until its put settles:
+ * a player may ask for a piece the moment it's verified.
+ */
+export function readableWhileStoring(store: PieceStore): PieceStore {
+	const storing = new Map<number, Uint8Array>();
+	return {
+		kind: store.kind,
+		list: () => store.list(),
+		get: async (piece) => storing.get(piece) ?? store.get(piece),
+		put: async (piece, data) => {
+			storing.set(piece, data);
+			try {
+				await store.put(piece, data);
+			} finally {
+				if (storing.get(piece) === data) storing.delete(piece);
+			}
+		},
+	};
+}

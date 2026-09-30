@@ -5,11 +5,18 @@
 	import { CURSOR_COLOR, PIECE_COLORS } from "$lib/torrent/palette";
 
 	// A seek-bar-style view of the whole file: where playback could start
-	// today, and the recovery front (cursor). Clicking moves the front.
+	// today, the recovery front (cursor), and where the player last read.
+	// Clicking moves the front.
 	let {
 		snapshot,
+		playhead = -1,
 		onSeek,
-	}: { snapshot: EngineSnapshot; onSeek?: (fileByte: number) => void } = $props();
+	}: {
+		snapshot: EngineSnapshot;
+		/** File byte the player last read (-1: none). */
+		playhead?: number;
+		onSeek?: (fileByte: number) => void;
+	} = $props();
 
 	let container: HTMLDivElement | undefined = $state();
 	let canvas: HTMLCanvasElement | undefined = $state();
@@ -17,10 +24,10 @@
 	const HEIGHT = 10;
 
 	$effect(() => {
-		draw(snapshot, width);
+		draw(snapshot, width, playhead);
 	});
 
-	function draw(s: EngineSnapshot, w: number) {
+	function draw(s: EngineSnapshot, w: number, readAt: number) {
 		if (!canvas || w === 0) return;
 		const dpr = window.devicePixelRatio || 1;
 		canvas.width = Math.round(w * dpr);
@@ -47,6 +54,14 @@
 		const cursorX = Math.round((s.cursor - s.firstPiece) * per);
 		ctx.fillStyle = CURSOR_COLOR;
 		ctx.fillRect(Math.min(Math.max(cursorX, 0), w - 2), 0, 2, HEIGHT);
+		if (readAt >= 0 && s.fileSize > 0) {
+			// White with black edges: visible on recovered (light) and pending (dark) pieces.
+			const x = Math.min(Math.max(Math.round((readAt / s.fileSize) * w) - 2, 0), w - 4);
+			ctx.fillStyle = "#000";
+			ctx.fillRect(x, 0, 4, HEIGHT);
+			ctx.fillStyle = "#fff";
+			ctx.fillRect(x + 1, 0, 2, HEIGHT);
+		}
 	}
 
 	function onClick(e: MouseEvent) {

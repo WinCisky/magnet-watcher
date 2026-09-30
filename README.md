@@ -1,9 +1,10 @@
 # Magnet Watcher
 
 Paste a magnet link, pick a video file, and the page recovers the file's
-pieces from the BitTorrent swarm, verifying each one in the browser.
-Recovery is sequential (the file's head and tail first, then in order from a
-movable front) so it can back streaming and seeking later.
+pieces from the BitTorrent swarm, verifying each one in the browser, and
+plays the video while it downloads. Recovery is sequential (the file's head
+and tail first, then in order from a movable front), and the player moves
+that front to wherever playback needs data.
 
 - **Choosing a video.** A magnet's videos are shown as a folder tree (like
   `tree`): folders first, episodes in number order, folders holding a single
@@ -75,6 +76,54 @@ PUBLIC_SEEDERS_URL=http://127.0.0.1:8080 PUBLIC_WORKER_URL=http://127.0.0.1:8787
 To see every worker request in the browser console, run
 `localStorage.setItem("mw-debug", "1")` and reload.
 
+## Playback
+
+The video page has a player above the recovery details. Press play once the
+video's header is read (a few MiB from the file's start or end). A read of
+data that isn't in yet waits for its piece and moves the recovery front
+there. So seeking in the player, playing past the front, or a container
+index at the end of the file all steer recovery. The piece strip at the
+bottom marks where playback last read.
+
+- **Formats** (Chrome as the baseline):
+
+  | Kind | Supported |
+  | :-- | :-- |
+  | Containers | MKV/WebM, MP4/MOV, AVI, MPEG-TS |
+  | Video | H.264, HEVC (8 and 10 bit), MPEG-4 Part 2 (Xvid, DivX), DivX 3, MPEG-2, VP9, AV1 |
+  | Audio | AAC, MP3, AC3, EAC3, DTS, Opus, Vorbis, FLAC, PCM |
+  | Extras | several audio tracks; embedded SRT and ASS subtitles |
+
+  There are no decoders for TrueHD, MP2 audio, WMV or RealVideo.
+- **Decoding.** Built on [libmedia](https://github.com/zhaohappy/libmedia)
+  (`@libmedia/avplayer`). It uses the GPU (WebCodecs) where it can, or
+  Chrome's own player (MSE) when the codecs are ones Chrome plays.
+  Otherwise it decodes with FFmpeg compiled to wasm, one decoder per codec,
+  fetched only when a video needs it: HEVC on machines without hardware
+  support, DivX/Xvid, and AC3/EAC3/DTS audio. GitHub Pages can't enable
+  cross-origin isolation, so wasm decoding runs single-threaded, and HEVC at
+  1080p and above may drop frames on slower machines. Nothing is re-encoded.
+- **Controls.** Seek bar with the downloaded parts shaded (bytes mapped
+  linearly to time, so approximate), volume, audio track and subtitle
+  menus, full screen. Keys: space or `k`, `←`/`→` (10 s), `f`, `m`.
+- **Code.** The player and recovery are independent:
+  - `src/lib/player/` reads from any `ByteSource` (`source.ts`) and knows
+    nothing about torrents;
+  - `src/lib/torrent/stream.ts` serves a file's bytes from its verified
+    pieces, and knows nothing about players;
+  - the video page joins them, and `src/lib/boundaries.test.ts` fails if
+    either side imports the other.
+- **Codec files.** `scripts/fetch-codecs.mjs` runs before `dev` and
+  `build`. It downloads libmedia's wasm decoders (from jsDelivr, or GitHub
+  if that fails) into `public/libmedia/` (gitignored), pinned to the
+  version and SHA-256s in `scripts/codecs.json`, so the site serves them
+  itself. After upgrading `@libmedia/avplayer`, set
+  the new version there and run `node scripts/fetch-codecs.mjs --update`.
+  `scripts/vite-libmedia.mjs` copies libmedia's lazily loaded format chunks
+  next to its bundle.
+- **Licenses.** libmedia is LGPL-3.0-or-later, used unmodified from npm.
+  Its wasm decoders are built from [FFmpeg](https://ffmpeg.org) (LGPL).
+
 ## Diagnostics
 
 The page records anonymous measurements of how each part of it performs.
@@ -93,7 +142,10 @@ Nothing is ever sent anywhere. The code is in `src/lib/diagnostics/`.
   - worker requests by how they ended, time to unchoke, why candidates
     failed, and which clients served the data;
   - speed per 10 s window, stalls (5 s or more with no data), time from a
-    seek to 4 MiB ready, failed piece checks, and storage errors.
+    seek to 4 MiB ready, failed piece checks, and storage errors;
+  - the player: how it decoded (the browser's player or libmedia's
+    decoders) and the codecs, time to read the header and from play to the
+    first picture, waits for data, seek times, decoder stutters, and errors.
 - **Privacy.** There are no magnet links, file or torrent names, info-hashes
   or IP addresses. Error text is scrubbed of all of them, and sizes are
   rounded. A torrent appears only as a hash salted with a secret that never
@@ -109,7 +161,7 @@ Nothing is ever sent anywhere. The code is in `src/lib/diagnostics/`.
 - **The export.** `weakSpots` and `workingWell` summarize the verdicts:
   - `health` grades each part (lookup, seeder count, piece hashes, peer
     discovery, worker requests, startup, download speed, seeking, integrity,
-    storage, page errors) as good, fair or poor. The limits are in
+    playback, storage, page errors) as good, fair or poor. The limits are in
     `thresholds`. Each part has a one-line summary and details;
   - `visits` holds the raw records;
   - histograms are counts per bucket, with the bounds in `buckets`.
@@ -121,7 +173,7 @@ Nothing is ever sent anywhere. The code is in `src/lib/diagnostics/`.
 | `npm install` | Install dependencies |
 | `npm run dev` | Dev server at `localhost:4321` |
 | `npm run build` | Build to `./dist/` |
-| `npm test` | Unit tests for the recovery engine (vitest) |
+| `npm test` | Unit tests (vitest) |
 | `npx astro check` | Type-check |
 
 `src/lib/torrent/live.test.ts` benchmarks the real engine against running

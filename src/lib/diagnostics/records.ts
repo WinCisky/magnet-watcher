@@ -128,6 +128,47 @@ export interface RecoveryRecord {
 	storage: { kind: "cache" | "memory" | null; putErrors: number };
 	/** The swarm as the engine last saw it. */
 	peers: { known: number; reachable: number; usable: number; active: number; backedOff: number; banned: number };
+	/** The player (absent in records from before it existed). */
+	playback?: PlaybackRecord;
+}
+
+export interface PlaybackRecord {
+	/** "native": the browser's own player (MSE); "decode": WebCodecs or wasm decoders. */
+	mode: "native" | "decode" | null;
+	videoCodec: string | null;
+	audioCodec: string | null;
+	/** Picture height, as a common step (480, 720, 1080…). */
+	height: number | null;
+	/** From opening the video until the player had read its header. */
+	loadMs: number | null;
+	/** From the first press of play until the first picture (or sound). */
+	startMs: number | null;
+	playedMs: number;
+	/** Each time playback waited for data, by how long. */
+	waits: Hist;
+	/** Seeks, by how long they took to resume. */
+	seeks: Hist;
+	/** Frames the decoders were late with (decoding too slow). */
+	videoStutters: number;
+	audioStutters: number;
+	error: string | null;
+}
+
+export function newPlayback(): PlaybackRecord {
+	return {
+		mode: null,
+		videoCodec: null,
+		audioCodec: null,
+		height: null,
+		loadMs: null,
+		startMs: null,
+		playedMs: 0,
+		waits: hist(MS_BOUNDS),
+		seeks: hist(MS_BOUNDS),
+		videoStutters: 0,
+		audioStutters: 0,
+		error: null,
+	};
 }
 
 export function timed(): Timed {

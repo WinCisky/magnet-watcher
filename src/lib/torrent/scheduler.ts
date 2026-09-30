@@ -187,7 +187,8 @@ export interface SchedulerOptions {
 	maxInflightBytes?: number;
 	/** Candidates per request the worker accepts (default: 3, no fallbacks). */
 	maxCandidates?: number;
-	onVerified?: (piece: number) => void;
+	/** A piece passed its hash check (`data`: its bytes, also being stored). */
+	onVerified?: (piece: number, data: Uint8Array) => void;
 	/** Diagnostics: one line per finished request. */
 	debug?: (line: string) => void;
 	/** Diagnostics: a summary of every finished request. */
@@ -310,7 +311,10 @@ export class Scheduler {
 		return this.front > this.last || (this.front - this.cursor) * this.meta.pieceLength >= FRONT_READY_BYTES;
 	}
 
+	/** Also restarts after `stop` (a piece to fetch again, see `forget`). */
 	start(): void {
+		this.stopped = false;
+		clearInterval(this.timer);
 		this.timer = setInterval(() => this.tick(), TICK_MS);
 		this.tick();
 	}
@@ -329,6 +333,15 @@ export class Scheduler {
 			this.verifiedCount++;
 		}
 		this.advanceFront();
+	}
+
+	/** A verified piece is gone from storage: fetch it again. */
+	forget(piece: number): void {
+		if (piece < this.first || piece > this.last || !this.verified[piece - this.first]) return;
+		this.verified[piece - this.first] = 0;
+		this.verifiedCount--;
+		if (piece >= this.cursor && piece < this.front) this.front = piece;
+		if (!this.stopped) this.tick();
 	}
 
 	private advanceFront(): void {
@@ -412,7 +425,8 @@ export class Scheduler {
 		for (let p = this.first; p < this.cursor; p++) if (middle(p)) yield p;
 	}
 
-	private isUrgent(piece: number): boolean {
+	/** Fetched first: the file's head and tail, and the window past the front. */
+	isUrgent(piece: number): boolean {
 		return (
 			piece <= this.headEnd ||
 			piece >= this.tailStart ||
@@ -853,7 +867,7 @@ export class Scheduler {
 			this.verifiedCount++;
 			this.advanceFront();
 			this.opts.store.put(piece, w.buffer).catch(() => this.storeErrors++);
-			this.opts.onVerified?.(piece);
+			this.opts.onVerified?.(piece, w.buffer);
 		} else {
 			this.hashFailures++;
 			const sources = new Set(w.sources.filter((p): p is Peer => p !== undefined));

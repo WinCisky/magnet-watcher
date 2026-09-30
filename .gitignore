@@ -22,3 +22,6 @@ pnpm-debug.log*
 
 # jetbrains setting folder
 .idea/
+
+# libmedia wasm decoders, fetched by scripts/fetch-codecs.mjs
+public/libmedia/

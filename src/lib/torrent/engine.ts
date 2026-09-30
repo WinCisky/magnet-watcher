@@ -6,7 +6,8 @@ import { workerTransport } from "./batch";
 import { fileRange, parseInfoDict, type FileRange, type Metainfo } from "./metainfo";
 import { rememberFile } from "./library";
 import { Scheduler, PieceState, type BatchReport } from "./scheduler";
-import { openPieceStore, type PieceStore } from "./store";
+import { openPieceStore, readableWhileStoring, type PieceStore } from "./store";
+import { FileStream } from "./stream";
 import { Swarm } from "./swarm";
 
 const SNAPSHOT_MS = 200;
@@ -106,6 +107,8 @@ export interface EngineObserver {
 }
 
 export class RecoveryEngine {
+	/** The file's bytes, for a player: reads wait for their pieces. */
+	readonly stream = new FileStream();
 	private phase: EnginePhase = "metadata";
 	private message: string | null = null;
 	private meta: Metainfo | null = null;
@@ -173,12 +176,13 @@ export class RecoveryEngine {
 
 			this.phase = "peers";
 			this.message = "Finding peers";
+			const store = readableWhileStoring(this.store);
 			this.scheduler = new Scheduler({
 				meta,
 				range: this.range,
 				swarm: this.swarm,
 				transport: workerTransport(workerUrl, meta),
-				store: this.store,
+				store,
 				// The scheduler scales up to this with the usable peers. Over plain
 				// HTTP (local dev) browsers allow ~6 connections per host; HTTPS
 				// multiplexes requests over one HTTP/2 connection.
@@ -186,9 +190,19 @@ export class RecoveryEngine {
 				maxCandidates: await maxCandidates,
 				debug: this.opts.debug,
 				onBatchEnd: this.opts.observer ? (r) => this.observe((o) => o.batch?.(r)) : undefined,
+				onVerified: (piece, data) => this.stream.verified(piece, data),
 			});
 			this.scheduler.markVerified(stored);
 			const range = this.range;
+			const scheduler = this.scheduler;
+			this.stream.attach({
+				pieceLength: meta.pieceLength,
+				range,
+				isVerified: (piece) => scheduler.isVerified(piece),
+				load: (piece) => store.get(piece),
+				demand: (piece) => this.demand(piece),
+				lost: (piece) => this.lost(piece),
+			});
 			const verified = this.scheduler.verifiedCount;
 			this.observe((o) => o.ready?.(meta, range, verified));
 			if (this.scheduler.complete) {
@@ -204,6 +218,7 @@ export class RecoveryEngine {
 			if (this.stopped) return;
 			this.phase = "error";
 			this.message = e instanceof Error ? e.message : "Something went wrong";
+			this.stream.close();
 			this.emit();
 		}
 	}
@@ -213,12 +228,36 @@ export class RecoveryEngine {
 		clearInterval(this.timer);
 		this.scheduler?.stop();
 		this.swarm?.stop();
+		this.stream.close();
 	}
 
 	/** Move the sequential recovery front to a byte offset in the file. */
 	seek(fileByte: number): void {
 		if (!this.meta || !this.range || !this.scheduler) return;
 		this.scheduler.setCursor(Math.floor((this.range.offset + fileByte) / this.meta.pieceLength));
+	}
+
+	/**
+	 * A read waits for `piece`: unless it's among what's fetched first
+	 * anyway, playback needs it next (a seek, a container index at the end
+	 * of the file): move the front there.
+	 */
+	private demand(piece: number): void {
+		const scheduler = this.scheduler;
+		if (this.stopped || !scheduler || scheduler.isVerified(piece) || scheduler.isUrgent(piece)) return;
+		scheduler.setCursor(piece);
+	}
+
+	/** A verified piece is gone from storage (refused, or evicted): fetch it again. */
+	private lost(piece: number): void {
+		const scheduler = this.scheduler;
+		if (this.stopped || !scheduler?.isVerified(piece)) return;
+		scheduler.forget(piece);
+		if (this.phase !== "complete") return;
+		this.phase = "recovering";
+		void this.swarm?.start();
+		scheduler.start();
+		this.emit();
 	}
 
 	private observe(report: (observer: EngineObserver) => void): void {

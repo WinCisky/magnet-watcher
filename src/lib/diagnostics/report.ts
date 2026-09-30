@@ -3,7 +3,7 @@
 // fine show at a glance. Loaded only when the user exports.
 
 import type { Environment } from "./env";
-import type { Milestone, RecoveryRecord, Timed, VisitRecord } from "./records";
+import type { Milestone, PlaybackRecord, RecoveryRecord, Timed, VisitRecord } from "./records";
 import { MS_BOUNDS, RATE_BOUNDS, add, hist, merge, mergeCounts, quantile, type Counts, type Hist } from "./stats";
 
 export type Status = "good" | "fair" | "poor" | "no data";
@@ -40,6 +40,15 @@ export const THRESHOLDS = {
 	throughput: { goodMedian: 3 * MB, poorMedian: 1 * MB, goodStallShare: 0.05, poorStallShare: 0.2 },
 	seeking: { goodP90Ms: 5_000, poorP90Ms: 13_000 },
 	integrity: { goodPerGiB: 1, poorPerGiB: 5, minBytes: 64 * MB },
+	playback: {
+		goodStartP90Ms: 3_000,
+		poorStartP90Ms: 8_000,
+		goodWaitShare: 0.02,
+		poorWaitShare: 0.1,
+		goodStuttersPerMin: 1,
+		poorStuttersPerMin: 6,
+		poorFailShare: 0.2,
+	},
 	app: { poorErrorsPerVisit: 0.2 },
 };
 
@@ -77,6 +86,7 @@ export function buildReport(input: ReportInput) {
 		throughput: throughput(recoveries),
 		seeking: seeking(recoveries),
 		integrity: integrity(recoveries),
+		playback: playback(recoveries),
 		storage: storage(recoveries, input.storage),
 		app: app(visits),
 	};
@@ -317,6 +327,84 @@ function seeking(recoveries: RecoveryRecord[]): PartHealth {
 	};
 }
 
+function playback(recoveries: RecoveryRecord[]): PartHealth {
+	const title = "Playback (the player: start, waits for data, decoding)";
+	const opened = recoveries
+		.map((r) => r.playback)
+		.filter((p): p is PlaybackRecord => !!p && (p.loadMs !== null || p.error !== null));
+	if (opened.length === 0) return noData(title);
+	const th = THRESHOLDS.playback;
+	const failed = opened.filter((p) => p.error !== null);
+	const starts = opened.map((p) => p.startMs).filter((ms): ms is number => ms !== null);
+	const startP50 = percentile(starts, 0.5);
+	const startP90 = percentile(starts, 0.9);
+	const playedMs = sum(opened, (p) => p.playedMs);
+	const waits = hist(MS_BOUNDS);
+	const seeks = hist(MS_BOUNDS);
+	for (const p of opened) {
+		merge(waits, p.waits);
+		merge(seeks, p.seeks);
+	}
+	// Waiting happens while "playing": it's part of the time played.
+	const waitShare = playedMs > 0 ? Math.min(1, waits.sum / playedMs) : 0;
+	const stutters = sum(opened, (p) => p.videoStutters + p.audioStutters);
+	const perMin = playedMs >= 60_000 ? stutters / (playedMs / 60_000) : null;
+	const failShare = failed.length / opened.length;
+	const count = (key: (p: PlaybackRecord) => string | number | null) => {
+		const out: Counts = {};
+		for (const p of opened) {
+			const k = key(p);
+			if (k !== null) out[String(k)] = (out[String(k)] ?? 0) + 1;
+		}
+		return out;
+	};
+	const errors = count((p) => p.error);
+	const modes = count((p) => p.mode);
+	const top = topKey(errors);
+	return {
+		title,
+		status: grade(
+			failShare === 0 &&
+				(startP90 ?? 0) <= th.goodStartP90Ms &&
+				waitShare <= th.goodWaitShare &&
+				(perMin ?? 0) <= th.goodStuttersPerMin,
+			failShare > th.poorFailShare ||
+				(startP90 ?? 0) > th.poorStartP90Ms ||
+				waitShare > th.poorWaitShare ||
+				(perMin ?? 0) > th.poorStuttersPerMin,
+		),
+		summary:
+			`${opened.length} video(s) opened, ${starts.length} played` +
+			(Object.keys(modes).length ? ` (${Object.entries(modes).map(([m, n]) => `${m}: ${n}`).join(", ")})` : "") +
+			(startP50 !== null ? `; first picture within ${sec(startP50)} for half, ${sec(startP90)} for 90%` : "") +
+			(playedMs > 0 ? `; waited for data ${pct(waitShare)} of ${Math.round(playedMs / 60_000)} min played` : "") +
+			(perMin !== null ? `; ${perMin.toFixed(1)} decoder stutters/min` : "") +
+			(failed.length ? `; ${failed.length} couldn't play (${top})` : ""),
+		details: {
+			opened: opened.length,
+			played: starts.length,
+			failed: failed.length,
+			modes,
+			videoCodecs: count((p) => p.videoCodec),
+			audioCodecs: count((p) => p.audioCodec),
+			heights: count((p) => p.height),
+			loadP50Ms: percentile(
+				opened.map((p) => p.loadMs).filter((ms): ms is number => ms !== null),
+				0.5,
+			),
+			startP50Ms: startP50,
+			startP90Ms: startP90,
+			playedMinutes: round(playedMs / 60_000),
+			waits: waits.n,
+			waitShare: round(waitShare),
+			seeks: seeks.n,
+			seekP50Ms: quantile(seeks, MS_BOUNDS, 0.5),
+			stuttersPerMin: perMin === null ? null : round(perMin),
+			errors,
+		},
+	};
+}
+
 function integrity(recoveries: RecoveryRecord[]): PartHealth {
 	const title = "Data integrity (piece checks)";
 	const bytes = sum(recoveries, (r) => r.transfer.bytes);
@@ -413,6 +501,13 @@ function median(values: number[]): number | null {
 	if (values.length === 0) return null;
 	const sorted = [...values].sort((a, b) => a - b);
 	return sorted[Math.floor(sorted.length / 2)];
+}
+
+/** Nearest-rank percentile. */
+function percentile(values: number[], q: number): number | null {
+	if (values.length === 0) return null;
+	const sorted = [...values].sort((a, b) => a - b);
+	return sorted[Math.min(sorted.length - 1, Math.max(0, Math.ceil(q * sorted.length) - 1))];
 }
 
 function sum<T>(items: T[], value: (item: T) => number): number {

@@ -182,6 +182,21 @@ describe("Scheduler", { timeout: 30_000 }, () => {
 		for (let i = 1; i < verifiedOrder.length; i++) expect(verifiedOrder[i]).toBeGreaterThan(verifiedOrder[i - 1] - 8);
 	});
 
+	it("fetches a piece again when storage lost it, even after finishing", async () => {
+		const { scheduler, verifiedOrder } = await setup({ "1.1.1.1:1": "fast", "2.2.2.2:2": "fast" }, { pieces: 20 });
+		scheduler.start();
+		await until(() => scheduler.complete);
+		scheduler.stop();
+		scheduler.forget(5);
+		expect(scheduler.complete).toBe(false);
+		expect(scheduler.isVerified(5)).toBe(false);
+		expect(scheduler.front).toBe(5);
+		scheduler.start();
+		await until(() => scheduler.complete);
+		scheduler.stop();
+		expect(verifiedOrder.filter((p) => p === 5)).toHaveLength(2);
+	});
+
 	it("goes sequential after the head and tail on a big file", async () => {
 		// 1 MiB pieces: head = 2 pieces, tail = 2, urgent window = 16, then readahead.
 		const { meta, scheduler, verifiedOrder } = await setup(

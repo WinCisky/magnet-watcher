@@ -102,6 +102,8 @@ export class Swarm {
 
 	/** First refresh (awaitable), then every 5 minutes. */
 	start(): Promise<void> {
+		this.stopped = false;
+		clearInterval(this.timer);
 		this.timer = setInterval(() => void this.refresh(), REFRESH_INTERVAL_MS);
 		return this.refresh();
 	}

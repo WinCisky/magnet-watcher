@@ -200,3 +200,34 @@ describe("clientFamily", () => {
 		expect(clientFamily("  ")).toBe("unknown");
 	});
 });
+
+describe("RecoveryRecorder.playback", () => {
+	it("keeps what the player reported, and its last totals after the recovery ended", () => {
+		const { record, recorder } = setup();
+		expect(record.playback).toBeUndefined();
+		recorder.playback({ type: "loaded", ms: 1_234.5, mode: null, videoCodec: "hevc", audioCodec: "ac3", height: 800 });
+		recorder.playback({ type: "started", ms: 2_100, mode: "decode" });
+		recorder.playback({ type: "started", ms: 9_000, mode: "decode" });
+		recorder.playback({ type: "waited", ms: 1_500 });
+		recorder.playback({ type: "seeked", ms: 700 });
+		recorder.playback({ type: "error", stage: "play", message: "decode failed near 10.0.0.2" });
+		recorder.playback({ type: "stats", playedMs: 30_000, videoStutters: 1, audioStutters: 0 });
+		recorder.end();
+		recorder.playback({ type: "waited", ms: 9_999 });
+		recorder.playback({ type: "stats", playedMs: 61_000.4, videoStutters: 3, audioStutters: 1 });
+		expect(record.playback).toMatchObject({
+			mode: "decode",
+			videoCodec: "hevc",
+			audioCodec: "ac3",
+			height: 1080,
+			loadMs: 1_235,
+			startMs: 2_100,
+			playedMs: 61_000,
+			videoStutters: 3,
+			audioStutters: 1,
+			error: "play: decode failed near <ip>",
+		});
+		expect(record.playback?.waits.n).toBe(1);
+		expect(record.playback?.seeks.n).toBe(1);
+	});
+});

@@ -9,9 +9,19 @@ import type { SwarmSnapshot } from "$lib/magnet/api";
 import type { EngineObserver, EngineSnapshot } from "$lib/torrent/engine";
 import type { FileRange, Metainfo } from "$lib/torrent/metainfo";
 import type { BatchReport } from "$lib/torrent/scheduler";
+import type { PlayerEvent } from "$lib/player/player";
 import { allVisits, clearVisits, countVisits, pruneVisits, putVisit } from "./db";
 import { detectEnvironment } from "./env";
-import { newId, newRecovery, newVisit, type Milestone, type RecoveryRecord, type Timed, type VisitRecord } from "./records";
+import {
+	newId,
+	newPlayback,
+	newRecovery,
+	newVisit,
+	type Milestone,
+	type RecoveryRecord,
+	type Timed,
+	type VisitRecord,
+} from "./records";
 import { MS_BOUNDS, RATE_BOUNDS, add, bump, coarse, scrub } from "./stats";
 
 const FLUSH_MS = 15_000;
@@ -376,6 +386,42 @@ export class RecoveryRecorder implements EngineObserver {
 	}
 
 	/** The view closed. */
+	/** What the player reported: no per-frame hooks, a handful of events per video. */
+	playback(event: PlayerEvent): void {
+		// The player closes after the recovery has ended (it unmounts last):
+		// its last totals still count.
+		if (this.ended && event.type !== "stats") return;
+		const p = (this.record.playback ??= newPlayback());
+		switch (event.type) {
+			case "loaded":
+				p.loadMs = Math.round(event.ms);
+				p.videoCodec = event.videoCodec;
+				p.audioCodec = event.audioCodec;
+				p.height = heightStep(event.height);
+				break;
+			case "started":
+				p.startMs ??= Math.round(event.ms);
+				p.mode = event.mode;
+				break;
+			case "waited":
+				add(p.waits, MS_BOUNDS, event.ms);
+				break;
+			case "seeked":
+				add(p.seeks, MS_BOUNDS, event.ms);
+				break;
+			case "error":
+				p.error ??= scrub(`${event.stage}: ${event.message}`, 160);
+				break;
+			case "stats":
+				// Running totals of this video's player.
+				p.playedMs = Math.max(p.playedMs, Math.round(event.playedMs));
+				p.videoStutters = Math.max(p.videoStutters, event.videoStutters);
+				p.audioStutters = Math.max(p.audioStutters, event.audioStutters);
+				break;
+		}
+		this.changed();
+	}
+
 	end(): void {
 		if (this.ended) return;
 		const now = this.clock();
@@ -398,6 +444,14 @@ export class RecoveryRecorder implements EngineObserver {
 		this.record.transfer.stallMs += Math.round(now - this.stallFrom);
 		this.stallFrom = null;
 	}
+}
+
+const HEIGHTS = [240, 360, 480, 576, 720, 1080, 1440, 2160, 4320];
+
+/** 800 (a cropped 1080p) → 1080: common steps only. */
+function heightStep(height: number | null): number | null {
+	if (!height || height <= 0) return null;
+	return HEIGHTS.find((h) => height <= h) ?? HEIGHTS[HEIGHTS.length - 1];
 }
 
 /** Latency counts successes only: a failure's time is mostly its timeout. */

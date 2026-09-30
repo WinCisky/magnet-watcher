@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { newRecovery, newVisit, type RecoveryRecord, type VisitRecord } from "./records";
+import { newPlayback, newRecovery, newVisit, type RecoveryRecord, type VisitRecord } from "./records";
 import { buildReport } from "./report";
 import { MS_BOUNDS, RATE_BOUNDS, add } from "./stats";
 
@@ -113,5 +113,48 @@ describe("buildReport", () => {
 	it("exports nothing that names a torrent, file or peer", () => {
 		const out = JSON.stringify(report([visit([recovery(healthy)])]));
 		expect(out).not.toMatch(/magnet:\?xt|[0-9a-f]{40}|\d+\.\d+\.\d+\.\d+:\d+|\.mkv"/i);
+	});
+
+	it("grades playback: quick starts are good, failures and long waits are not", () => {
+		const watched = (tune: (p: NonNullable<RecoveryRecord["playback"]>) => void) =>
+			recovery((r) => {
+				healthy(r);
+				const p = newPlayback();
+				p.loadMs = 900;
+				p.startMs = 1_800;
+				p.mode = "decode";
+				p.videoCodec = "hevc";
+				p.audioCodec = "eac3";
+				p.playedMs = 600_000;
+				add(p.waits, MS_BOUNDS, 2_000);
+				tune(p);
+				r.playback = p;
+			});
+		const good = report([visit([watched(() => {}), recovery(healthy)])]);
+		expect(good.health.playback.status).toBe("good");
+		expect(good.health.playback.summary).toContain("1 video(s) opened, 1 played (decode: 1); first picture within 1.8 s");
+		expect(good.health.playback.details).toMatchObject({ played: 1, videoCodecs: { hevc: 1 }, modes: { decode: 1 } });
+
+		const waiting = report([
+			visit([
+				watched((p) => {
+					for (let i = 0; i < 30; i++) add(p.waits, MS_BOUNDS, 3_000);
+				}),
+			]),
+		]);
+		expect(waiting.health.playback.status).toBe("poor");
+		expect(waiting.health.playback.summary).toContain("waited for data 15% of 10 min played");
+
+		const broken = report([
+			visit([
+				watched(() => {}),
+				watched((p) => {
+					p.startMs = null;
+					p.error = "load: open stream failed";
+				}),
+			]),
+		]);
+		expect(broken.health.playback.status).toBe("poor");
+		expect(broken.health.playback.summary).toContain("1 couldn't play (load: open stream failed)");
 	});
 });
