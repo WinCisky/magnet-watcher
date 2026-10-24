@@ -2,7 +2,8 @@
 	import { onMount } from "svelte";
 	import type { EngineSnapshot } from "$lib/torrent/engine";
 	import { PieceState } from "$lib/torrent/scheduler";
-	import { PIECE_COLORS, PIECE_LABELS } from "$lib/torrent/palette";
+	import { mode } from "mode-watcher";
+	import { palette, PIECE_LABELS, type Palette } from "$lib/torrent/palette";
 	import { formatBytes } from "$lib/magnet/files";
 
 	let { snapshot, maxHeight = 360 }: { snapshot: EngineSnapshot; maxHeight?: number } = $props();
@@ -13,6 +14,7 @@
 	let hovered: { index: number; x: number; y: number } | null = $state(null);
 
 	const count = $derived(snapshot.states.length);
+	const colors = $derived(palette(mode.current !== "light"));
 
 	// Largest square cell (with a gap once cells are big enough to afford
 	// one) that fits every piece within maxHeight.
@@ -28,10 +30,10 @@
 	});
 
 	$effect(() => {
-		draw(snapshot, layout, width, hovered?.index ?? -1);
+		draw(snapshot, layout, width, hovered?.index ?? -1, colors);
 	});
 
-	function draw(s: EngineSnapshot, l: typeof layout, w: number, hover: number) {
+	function draw(s: EngineSnapshot, l: typeof layout, w: number, hover: number, c: Palette) {
 		if (!canvas || w === 0) return;
 		const dpr = window.devicePixelRatio || 1;
 		canvas.width = Math.round(w * dpr);
@@ -47,17 +49,17 @@
 			const state = s.states[i];
 			if (state === PieceState.Downloading) {
 				// Partial fill, bottom-up, over the pending color.
-				ctx.fillStyle = PIECE_COLORS[PieceState.Pending];
+				ctx.fillStyle = c.pieces[PieceState.Pending];
 				ctx.fillRect(x, y, l.cell, l.cell);
 				const filled = Math.max(1, Math.round((l.cell * s.progress[i]) / 255));
-				ctx.fillStyle = PIECE_COLORS[PieceState.Downloading];
+				ctx.fillStyle = c.pieces[PieceState.Downloading];
 				ctx.fillRect(x, y + l.cell - filled, l.cell, filled);
 			} else {
-				ctx.fillStyle = PIECE_COLORS[state];
+				ctx.fillStyle = c.pieces[state];
 				ctx.fillRect(x, y, l.cell, l.cell);
 			}
 			if (i === hover && l.cell >= 4) {
-				ctx.strokeStyle = "#ffffff";
+				ctx.strokeStyle = c.hover;
 				ctx.lineWidth = 1;
 				ctx.strokeRect(x + 0.5, y + 0.5, l.cell - 1, l.cell - 1);
 			}
@@ -115,15 +117,15 @@
 	></canvas>
 	{#if hovered && tooltip}
 		<div
-			class="pointer-events-none absolute z-10 min-w-40 -translate-x-1/2 rounded-md border border-white/15 bg-neutral-900/95 px-2.5 py-1.5 text-left text-xs shadow-lg"
+			class="pointer-events-none absolute z-10 min-w-40 -translate-x-1/2 bg-popover text-popover-foreground rounded-md border px-2.5 py-1.5 text-left text-xs shadow-lg"
 			style:left="{Math.min(Math.max(hovered.x, 80), width - 80)}px"
 			style:top="{hovered.y + 14}px"
 		>
-			<p class="font-medium text-white">
+			<p class="font-medium">
 				{tooltip.state}{#if tooltip.detail}&nbsp;· {tooltip.detail}{/if}
 			</p>
-			<p class="text-white/60">Piece {tooltip.piece} · {tooltip.range}</p>
-			<p class="text-white/60">{tooltip.holders} known peer{tooltip.holders === 1 ? "" : "s"} have it</p>
+			<p class="text-muted-foreground">Piece {tooltip.piece} · {tooltip.range}</p>
+			<p class="text-muted-foreground">{tooltip.holders} known peer{tooltip.holders === 1 ? "" : "s"} have it</p>
 		</div>
 	{/if}
 </div>

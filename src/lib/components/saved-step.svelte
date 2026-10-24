@@ -11,11 +11,14 @@
 		deleteSavedTorrent,
 		libraryAvailable,
 		listSaved,
+		savedFileBytes,
 		type SavedFile,
 		type SavedLibrary,
 	} from "$lib/torrent/library";
 	import FileName from "./file-name.svelte";
 	import SavedBadge from "./saved-badge.svelte";
+	import DownloadButton from "./download-button.svelte";
+	import PageShell from "./page-shell.svelte";
 	import { diagnostics } from "$lib/diagnostics/recorder";
 
 	let {
@@ -103,13 +106,13 @@
 	{/if}
 {/snippet}
 
-<div class="flex w-full max-w-2xl flex-col gap-4 px-4 py-16">
-	<div>
-		<Button variant="ghost" size="sm" onclick={onBack}>
+<PageShell>
+	{#snippet actions()}
+		<Button variant="outline" size="sm" onclick={onBack}>
 			<ArrowLeftIcon />
 			Back
 		</Button>
-	</div>
+	{/snippet}
 
 	<div class="flex flex-wrap items-end justify-between gap-2">
 		<div>
@@ -178,6 +181,14 @@
 							</span>
 						</button>
 						<div class="flex h-11 shrink-0 items-center">
+							{#if f.complete}
+								<DownloadButton
+									name={f.path.split("/").at(-1) ?? f.path}
+									size={f.size}
+									open={() => savedFileBytes(f.infoHash, f.index)}
+									iconOnly
+								/>
+							{/if}
 							{@render deleteButton(fileKey(f), f.path, () => deleteSavedFile(f.infoHash, f.index))}
 						</div>
 					</li>
@@ -213,4 +224,4 @@
 			</div>
 		{/if}
 	{/if}
-</div>
+</PageShell>

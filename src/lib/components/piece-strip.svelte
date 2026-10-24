@@ -2,7 +2,8 @@
 	import { onMount } from "svelte";
 	import type { EngineSnapshot } from "$lib/torrent/engine";
 	import { PieceState } from "$lib/torrent/scheduler";
-	import { CURSOR_COLOR, PIECE_COLORS } from "$lib/torrent/palette";
+	import { mode } from "mode-watcher";
+	import { palette, type Palette } from "$lib/torrent/palette";
 
 	// A seek-bar-style view of the whole file: where playback could start
 	// today, the recovery front (cursor), and where the player last read.
@@ -22,12 +23,13 @@
 	let canvas: HTMLCanvasElement | undefined = $state();
 	let width = $state(0);
 	const HEIGHT = 10;
+	const colors = $derived(palette(mode.current !== "light"));
 
 	$effect(() => {
-		draw(snapshot, width, playhead);
+		draw(snapshot, width, playhead, colors);
 	});
 
-	function draw(s: EngineSnapshot, w: number, readAt: number) {
+	function draw(s: EngineSnapshot, w: number, readAt: number, c: Palette) {
 		if (!canvas || w === 0) return;
 		const dpr = window.devicePixelRatio || 1;
 		canvas.width = Math.round(w * dpr);
@@ -35,7 +37,7 @@
 		const ctx = canvas.getContext("2d");
 		if (!ctx) return;
 		ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-		ctx.fillStyle = PIECE_COLORS[PieceState.Pending];
+		ctx.fillStyle = c.pieces[PieceState.Pending];
 		ctx.fillRect(0, 0, w, HEIGHT);
 		const n = s.states.length;
 		if (n === 0) return;
@@ -43,7 +45,7 @@
 		for (let i = 0; i < n; i++) {
 			const state = s.states[i];
 			if (state === PieceState.Pending) continue;
-			ctx.fillStyle = PIECE_COLORS[state];
+			ctx.fillStyle = c.pieces[state];
 			if (state === PieceState.Downloading) {
 				const h = Math.max(2, Math.round((HEIGHT * s.progress[i]) / 255));
 				ctx.fillRect(i * per, HEIGHT - h, Math.max(per, 1), h);
@@ -52,7 +54,7 @@
 			}
 		}
 		const cursorX = Math.round((s.cursor - s.firstPiece) * per);
-		ctx.fillStyle = CURSOR_COLOR;
+		ctx.fillStyle = c.cursor;
 		ctx.fillRect(Math.min(Math.max(cursorX, 0), w - 2), 0, 2, HEIGHT);
 		if (readAt >= 0 && s.fileSize > 0) {
 			// White with black edges: visible on recovered (light) and pending (dark) pieces.

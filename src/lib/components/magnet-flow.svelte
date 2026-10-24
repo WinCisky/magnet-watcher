@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { onMount } from "svelte";
+	import { ModeWatcher } from "mode-watcher";
 	import { fetchMetadata, fetchSeeders, warmUpSwarm, type TorrentMetadata } from "$lib/magnet/api";
 	import { isVideoFile } from "$lib/magnet/files";
 	import { diagnostics } from "$lib/diagnostics/recorder";
@@ -19,6 +20,8 @@
 	let currentMagnet = $state<string | null>(null);
 
 	let abortController: AbortController | null = null;
+	/** Home was opened from a video's search button (for diagnostics). */
+	let searchFromVideo = false;
 
 	const videoFiles = $derived(
 		metadata
@@ -149,6 +152,8 @@
 		const fileParam = url.searchParams.get("file");
 		const fileIndex = fileParam != null && /^\d+$/.test(fileParam) ? Number(fileParam) : null;
 
+		if (magnet || url.searchParams.has("saved")) searchFromVideo = false;
+
 		if (url.searchParams.has("saved")) {
 			abortController?.abort();
 			abortController = null;
@@ -201,19 +206,15 @@
 		if (verifying) return;
 		const value = inputValue.trim();
 		if (!value) return;
-		error = search(value);
-	}
-
-	/** Look a magnet up, from home or the video page. Returns why it can't be. */
-	function search(value: string): string | null {
-		const magnet = value.trim();
-		if (!/^magnet:\?/i.test(magnet)) {
+		if (!/^magnet:\?/i.test(value)) {
 			diagnostics.count("invalid_magnet");
-			return "Enter a valid magnet link.";
+			error = "Enter a valid magnet link.";
+			return;
 		}
-		diagnostics.count(step === "view" ? "magnet_submitted_from_video" : "magnet_submitted");
-		runVerification(magnet, null, { push: true });
-		return null;
+		error = null;
+		diagnostics.count(searchFromVideo ? "magnet_submitted_from_video" : "magnet_submitted");
+		searchFromVideo = false;
+		runVerification(value, null, { push: true });
 	}
 
 	function navigate(params: { magnet: string; file?: number } | "saved" | null) {
@@ -240,6 +241,8 @@
 	});
 </script>
 
+<ModeWatcher />
+
 {#if step === "saved"}
 	<SavedStep
 		onOpen={(magnet, file) => {
@@ -249,7 +252,7 @@
 		onBack={() => navigate(null)}
 	/>
 {:else if step === "select" && metadata}
-	<FileSelectStep name={metadata.name} infoHash={metadata.info_hash} files={videoFiles} onSelect={handleSelect} />
+	<FileSelectStep name={metadata.name} infoHash={metadata.info_hash} files={videoFiles} onSelect={handleSelect} onHome={() => navigate(null)} />
 {:else if step === "view" && selectedFile && selectedFileIndex != null && seedersCount != null && metadata && currentMagnet}
 	{#key `${currentMagnet}#${selectedFileIndex}`}
 		<FileViewStep
@@ -263,7 +266,10 @@
 			seeders={seedersCount}
 			onSelect={handleSelect}
 			onHome={() => navigate(null)}
-			onSearch={search}
+			onSearch={() => {
+				navigate(null);
+				searchFromVideo = true;
+			}}
 		/>
 	{/key}
 {:else}

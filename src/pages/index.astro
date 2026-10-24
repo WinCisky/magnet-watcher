@@ -1,7 +1,6 @@
 ---
 import '../styles/global.css';
 import { createInitialModeExpression } from 'mode-watcher';
-import ModeToggle from '../lib/components/mode-toggle.svelte';
 import MagnetFlow from '../lib/components/magnet-flow.svelte';
 ---
 
@@ -49,11 +48,6 @@ import MagnetFlow from '../lib/components/magnet-flow.svelte';
 		</script>
 	</head>
 	<body>
-		<div class="fixed top-4 right-4 z-50">
-			<ModeToggle client:load />
-		</div>
-		<main class="grid min-h-dvh place-items-center">
-			<MagnetFlow client:load />
-		</main>
+		<MagnetFlow client:load />
 	</body>
 </html>

@@ -7,6 +7,7 @@ import { fileRange, parseInfoDict, type FileRange, type Metainfo } from "./metai
 import { rememberFile } from "./library";
 import { Scheduler, PieceState, type BatchReport } from "./scheduler";
 import { openPieceStore, readableWhileStoring, type PieceStore } from "./store";
+import { fileBytes } from "./download";
 import { FileStream } from "./stream";
 import { Swarm } from "./swarm";
 
@@ -118,6 +119,8 @@ export class RecoveryEngine {
 	private meta: Metainfo | null = null;
 	private range: FileRange | null = null;
 	private store: PieceStore | null = null;
+	/** The store as the scheduler and the stream use it (pieces readable while being stored). */
+	private readable: PieceStore | null = null;
 	private swarm: Swarm | null = null;
 	private scheduler: Scheduler | null = null;
 	private availability: Uint16Array = new Uint16Array(0);
@@ -181,6 +184,7 @@ export class RecoveryEngine {
 			this.phase = "peers";
 			this.message = "Finding peers";
 			const store = readableWhileStoring(this.store);
+			this.readable = store;
 			this.scheduler = new Scheduler({
 				meta,
 				range: this.range,
@@ -233,6 +237,13 @@ export class RecoveryEngine {
 		this.scheduler?.stop();
 		this.swarm?.stop();
 		this.stream.close();
+	}
+
+	/** The whole file's bytes, for a download; null until every piece is verified. */
+	fileBytes(): ReadableStream<Uint8Array> | null {
+		const { meta, range, readable, scheduler } = this;
+		if (!meta || !range || !readable || !scheduler?.complete) return null;
+		return fileBytes((piece) => readable.get(piece), range, meta.pieceLength);
 	}
 
 	/** Move the sequential recovery front to a byte offset in the file. */

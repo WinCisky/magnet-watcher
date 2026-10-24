@@ -16,11 +16,13 @@
 	import VideoPlayer from "$lib/player/video-player.svelte";
 	import { diagnostics } from "$lib/diagnostics/recorder";
 	import { savedProgress, type SavedProgress } from "$lib/torrent/library";
-	import { LEGEND, PIECE_COLORS, CURSOR_COLOR } from "$lib/torrent/palette";
+	import { mode } from "mode-watcher";
+	import { LEGEND, palette } from "$lib/torrent/palette";
 	import FileName from "./file-name.svelte";
 	import FileTree from "./file-tree.svelte";
-	import MagnetForm from "./magnet-form.svelte";
+	import DownloadButton from "./download-button.svelte";
 	import PieceMap from "./piece-map.svelte";
+	import PageShell from "./page-shell.svelte";
 	import PieceStrip from "./piece-strip.svelte";
 
 	let {
@@ -48,15 +50,16 @@
 		seeders: number;
 		onSelect: (index: number) => void;
 		onHome: () => void;
-		/** Look up another magnet; returns why it can't be. */
-		onSearch: (magnet: string) => string | null;
+		/** Go look up another magnet (the home page). */
+		onSearch: () => void;
 	} = $props();
 
 	const folders = $derived(file.path.split("/").slice(0, -1).join(" / "));
 	const baseName = $derived(file.path.split("/").at(-1) ?? file.path);
 
-	const barButton =
-		"inline-flex items-center rounded-md border border-white/20 text-sm text-white/80 transition-colors hover:bg-white/10 hover:text-white";
+	const colors = $derived(palette(mode.current !== "light"));
+	/** The sticky timeline that moves the recovery front: hidden for now. */
+	const SHOW_PIECE_STRIP = false;
 
 	let picker: HTMLDialogElement | undefined = $state();
 	let pickerOpen = $state(false);
@@ -75,25 +78,6 @@
 	function pick(index: number) {
 		picker?.close();
 		if (index !== fileIndex) onSelect(index);
-	}
-
-	let search: HTMLDialogElement | undefined = $state();
-	let searchOpen = $state(false);
-	let searchValue = $state("");
-	let searchError: string | null = $state(null);
-
-	function openSearch() {
-		if (!search) return;
-		diagnostics.count("video_search_opened");
-		searchError = null;
-		searchOpen = true;
-		search.showModal();
-	}
-
-	function submitSearch() {
-		if (!searchValue.trim()) return;
-		searchError = onSearch(searchValue);
-		if (!searchError) search?.close();
 	}
 
 	let snapshot: EngineSnapshot | null = $state.raw(null);
@@ -162,6 +146,12 @@
 		return { engine, recorder };
 	}
 
+	function downloadBytes(): ReadableStream<Uint8Array> {
+		const bytes = engine.fileBytes();
+		if (!bytes) throw new Error("The video isn't fully recovered yet");
+		return bytes;
+	}
+
 	onMount(() => {
 		void engine.start();
 		return () => {
@@ -171,137 +161,147 @@
 	});
 </script>
 
-<div class="fixed inset-0 z-[60] flex flex-col overflow-y-auto bg-black text-white">
-	<div class="mx-auto flex w-full max-w-5xl flex-1 flex-col gap-5 px-4 pt-4 pb-8">
-		<div class="flex items-center gap-2">
-			<button type="button" onclick={onHome} aria-label="Home" title="Home" class="{barButton} size-8 justify-center">
-				<HouseIcon class="size-4" />
-			</button>
-			{#if files.length > 1}
-				<button type="button" onclick={openPicker} class="{barButton} gap-1.5 px-2.5 py-1.5">
-					<ListVideoIcon class="size-4" />
-					Other videos
-					<span class="text-white/50 tabular-nums">{files.length}</span>
-				</button>
-			{/if}
-			<button
-				type="button"
-				onclick={openSearch}
-				aria-label="Search another magnet"
-				title="Search another magnet"
-				class="{barButton} ml-auto size-8 justify-center"
-			>
-				<SearchIcon class="size-4" />
-			</button>
-		</div>
+<PageShell>
+	{#snippet actions()}
+		<Button variant="outline" size="icon-sm" onclick={onHome} aria-label="Home" title="Home">
+			<HouseIcon />
+		</Button>
+		{#if files.length > 1}
+			<Button variant="outline" size="sm" onclick={openPicker}>
+				<ListVideoIcon />
+				Other videos
+				<span class="text-muted-foreground tabular-nums">{files.length}</span>
+			</Button>
+		{/if}
+	{/snippet}
+	{#snippet end()}
+		{#if snapshot?.phase === "complete"}
+			<DownloadButton name={baseName} size={file.size} open={downloadBytes} />
+		{/if}
+		<Button
+			variant="outline"
+			size="icon-sm"
+			onclick={() => {
+				diagnostics.count("video_search_opened");
+				onSearch();
+			}}
+			aria-label="Search another magnet"
+			title="Search another magnet"
+		>
+			<SearchIcon />
+		</Button>
+	{/snippet}
 
-		<!-- On wider screens the title gets some room from the top bar. -->
-		<div class="text-center md:mt-6">
-			{#if folders}
-				<p class="text-sm text-white/60"><FileName name={folders} /></p>
-			{/if}
-			<p class="text-lg font-medium"><FileName name={baseName} /></p>
-			<p class="text-sm text-white/60">
-				{formatBytes(file.size)}
-				{#if snapshot && snapshot.states.length > 0}
-					· {snapshot.states.length} pieces of {formatBytes(snapshot.pieceLength)}
-				{/if}
-			</p>
-		</div>
-
-		<VideoPlayer source={engine.stream} name={baseName} {available} {subtitles} onEvent={(e) => recorder.playback(e)} />
-
-		<div class="mx-auto flex w-full max-w-3xl flex-col gap-5">
-			{#if busy}
-				<div class="flex items-center justify-center gap-2 text-sm text-white/70">
-					<LoaderCircleIcon class="size-4 animate-spin" />
-					<span>{snapshot?.message ?? "Starting"}…</span>
-				</div>
-			{:else if snapshot?.phase === "error"}
-				<p class="text-center text-sm text-red-400">{snapshot.message}</p>
-			{/if}
-
+	<!-- On wider screens the title gets some room from the top bar. -->
+	<div class="text-center md:mt-6">
+		{#if folders}
+			<p class="text-sm text-muted-foreground"><FileName name={folders} /></p>
+		{/if}
+		<p class="text-lg font-medium"><FileName name={baseName} /></p>
+		<p class="text-sm text-muted-foreground">
+			{formatBytes(file.size)}
 			{#if snapshot && snapshot.states.length > 0}
-				<div class="flex flex-col gap-1 text-center">
-					<p class="text-2xl font-semibold tabular-nums">
-						{percent.toFixed(1)}%
-						<span class="text-base font-normal text-white/60">recovered</span>
-					</p>
-					<p class="text-sm text-white/70 tabular-nums">
-						{snapshot.verifiedPieces} / {snapshot.states.length} pieces · {formatBytes(snapshot.verifiedBytes)} of
-						{formatBytes(snapshot.fileSize)}
-						{#if snapshot.phase === "complete"}
-							· complete
-						{:else if snapshot.phase === "recovering"}
-							· {formatBytes(Math.round(snapshot.rate))}/s{#if snapshot.etaSeconds !== null}&nbsp;· ETA {formatEta(snapshot.etaSeconds)}{/if}
-						{/if}
-					</p>
-					<p class="text-sm text-white/70 tabular-nums">
-						Playable from the start: {formatBytes(snapshot.contiguousBytes)} ({contiguousPercent.toFixed(1)}%)
-					</p>
-				</div>
-
-				<PieceMap {snapshot} />
-
-				<ul class="flex flex-wrap justify-center gap-x-4 gap-y-1 text-xs text-white/70">
-					{#each LEGEND as item (item.state)}
-						<li class="flex items-center gap-1.5">
-							<span class="inline-block size-2.5 rounded-[2px]" style:background-color={PIECE_COLORS[item.state]}></span>
-							{item.label}
-						</li>
-					{/each}
-					<li class="flex items-center gap-1.5">
-						<span class="inline-block h-2.5 w-0.5" style:background-color={CURSOR_COLOR}></span>
-						Recovery front
-					</li>
-					{#if playhead >= 0}
-						<li class="flex items-center gap-1.5">
-							<span class="inline-block h-2.5 w-1 border border-black bg-white outline outline-white/40"></span>
-							Playback reads here
-						</li>
-					{/if}
-				</ul>
-
-				<div class="flex flex-col gap-1 text-center text-xs text-white/60 tabular-nums">
-					<p>
-						Peers: {snapshot.peers.active} fetching ({snapshot.peers.connections} connections) · {snapshot.peers.reachable} reachable · {snapshot.peers.seeds}
-						seeds · {snapshot.peers.known || seeders} known{#if snapshot.peers.backedOff > 0}&nbsp;· {snapshot.peers.backedOff}
-							resting{/if}{#if snapshot.peers.banned > 0}&nbsp;· {snapshot.peers.banned} banned{/if}
-					</p>
-					<p>
-						{snapshot.activeRequests} requests in flight · {snapshot.requests} worker requests{#if snapshot.hashFailures > 0}&nbsp;·
-							{snapshot.hashFailures} failed checks{/if}{#if snapshot.storage === "memory"}&nbsp;· not saved (no Cache
-							Storage){/if}
-					</p>
-					{#if snapshot.swarmError}
-						<p class="text-red-400">{snapshot.swarmError}</p>
-					{/if}
-				</div>
+				· {snapshot.states.length} pieces of {formatBytes(snapshot.pieceLength)}
 			{/if}
-		</div>
+		</p>
 	</div>
 
-	{#if snapshot && snapshot.states.length > 0}
-		<div class="sticky bottom-0 w-full bg-black/80 px-4 pt-2 pb-4 backdrop-blur">
-			<div class="mx-auto flex max-w-3xl flex-col gap-1">
-				<PieceStrip {snapshot} {playhead} onSeek={(byte) => engine.seek(byte)} />
-				<div class="flex justify-between text-[11px] text-white/50 tabular-nums">
-					<span>0</span>
-					<span>Click to move the recovery front</span>
-					<span>{formatBytes(snapshot.fileSize)}</span>
+	<VideoPlayer source={engine.stream} name={baseName} {available} {subtitles} onEvent={(e) => recorder.playback(e)} />
+
+	<div class="mx-auto flex w-full max-w-3xl flex-col gap-5">
+		{#if busy}
+			<div class="flex items-center justify-center gap-2 text-sm text-muted-foreground">
+				<LoaderCircleIcon class="size-4 animate-spin" />
+				<span>{snapshot?.message ?? "Starting"}…</span>
+			</div>
+		{:else if snapshot?.phase === "error"}
+			<p class="text-center text-sm text-destructive">{snapshot.message}</p>
+		{/if}
+
+		{#if snapshot && snapshot.states.length > 0}
+			<div class="flex flex-col gap-1 text-center">
+				<p class="text-2xl font-semibold tabular-nums">
+					{percent.toFixed(1)}%
+					<span class="text-base font-normal text-muted-foreground">recovered</span>
+				</p>
+				<p class="text-sm text-muted-foreground tabular-nums">
+					{snapshot.verifiedPieces} / {snapshot.states.length} pieces · {formatBytes(snapshot.verifiedBytes)} of
+					{formatBytes(snapshot.fileSize)}
+					{#if snapshot.phase === "complete"}
+						· complete
+					{:else if snapshot.phase === "recovering"}
+						· {formatBytes(Math.round(snapshot.rate))}/s{#if snapshot.etaSeconds !== null}&nbsp;· ETA {formatEta(snapshot.etaSeconds)}{/if}
+					{/if}
+				</p>
+				<p class="text-sm text-muted-foreground tabular-nums">
+					Playable from the start: {formatBytes(snapshot.contiguousBytes)} ({contiguousPercent.toFixed(1)}%)
+				</p>
+			</div>
+
+			<PieceMap {snapshot} />
+
+			<ul class="flex flex-wrap justify-center gap-x-4 gap-y-1 text-xs text-muted-foreground">
+				{#each LEGEND as item (item.state)}
+					<li class="flex items-center gap-1.5">
+						<span class="inline-block size-2.5 rounded-[2px]" style:background-color={colors.pieces[item.state]}></span>
+						{item.label}
+					</li>
+				{/each}
+				<!-- These two are drawn only on the timeline. -->
+				{#if SHOW_PIECE_STRIP}
+					<li class="flex items-center gap-1.5">
+						<span class="inline-block h-2.5 w-0.5" style:background-color={colors.cursor}></span>
+						Recovery front
+					</li>
+				{/if}
+				{#if SHOW_PIECE_STRIP && playhead >= 0}
+					<li class="flex items-center gap-1.5">
+						<span class="inline-block h-2.5 w-1 border border-black bg-white outline outline-foreground/20"></span>
+						Playback reads here
+					</li>
+				{/if}
+			</ul>
+
+			<div class="flex flex-col gap-1 text-center text-xs text-muted-foreground tabular-nums">
+				<p>
+					Peers: {snapshot.peers.active} fetching ({snapshot.peers.connections} connections) · {snapshot.peers.reachable} reachable · {snapshot.peers.seeds}
+					seeds · {snapshot.peers.known || seeders} known{#if snapshot.peers.backedOff > 0}&nbsp;· {snapshot.peers.backedOff}
+						resting{/if}{#if snapshot.peers.banned > 0}&nbsp;· {snapshot.peers.banned} banned{/if}
+				</p>
+				<p>
+					{snapshot.activeRequests} requests in flight · {snapshot.requests} worker requests{#if snapshot.hashFailures > 0}&nbsp;·
+						{snapshot.hashFailures} failed checks{/if}{#if snapshot.storage === "memory"}&nbsp;· not saved (no Cache
+						Storage){/if}
+				</p>
+				{#if snapshot.swarmError}
+					<p class="text-destructive">{snapshot.swarmError}</p>
+				{/if}
+			</div>
+		{/if}
+	</div>
+
+	{#snippet footer()}
+		{#if SHOW_PIECE_STRIP && snapshot && snapshot.states.length > 0}
+			<div class="sticky bottom-0 w-full bg-background/80 border-t px-4 pt-2 pb-4 backdrop-blur">
+				<div class="mx-auto flex max-w-3xl flex-col gap-1">
+					<PieceStrip {snapshot} {playhead} onSeek={(byte) => engine.seek(byte)} />
+					<div class="flex justify-between text-[11px] text-muted-foreground tabular-nums">
+						<span>0</span>
+						<span>Click to move the recovery front</span>
+						<span>{formatBytes(snapshot.fileSize)}</span>
+					</div>
 				</div>
 			</div>
-		</div>
-	{/if}
-</div>
+		{/if}
+	{/snippet}
+</PageShell>
 
-<!-- Always dark, like the stage behind it. -->
 <dialog
 	bind:this={picker}
 	onclose={() => (pickerOpen = false)}
 	onclick={(e) => e.target === picker && picker.close()}
 	aria-label="Choose another video"
-	class="dark bg-background text-foreground m-auto w-[min(42rem,calc(100vw-2rem))] max-w-none rounded-lg border p-0 backdrop:bg-black/70"
+	class="bg-background text-foreground m-auto w-[min(42rem,calc(100vw-2rem))] max-w-none rounded-lg border p-0 backdrop:bg-black/50"
 >
 	<div class="flex max-h-[85dvh] flex-col">
 		<div class="flex items-start gap-2 border-b p-4">
@@ -320,25 +320,5 @@
 				</div>
 			{/if}
 		</div>
-	</div>
-</dialog>
-
-<dialog
-	bind:this={search}
-	onclose={() => (searchOpen = false)}
-	onclick={(e) => e.target === search && search.close()}
-	aria-label="Search another magnet"
-	class="dark bg-background text-foreground m-auto w-[min(28rem,calc(100vw-2rem))] max-w-none rounded-lg border p-0 backdrop:bg-black/70"
->
-	<div class="flex items-center gap-2 border-b p-4">
-		<h2 class="flex-1 font-medium">Search another magnet</h2>
-		<Button variant="ghost" size="icon-sm" aria-label="Close" onclick={() => search?.close()}>
-			<XIcon />
-		</Button>
-	</div>
-	<div class="p-4">
-		{#if searchOpen}
-			<MagnetForm bind:value={searchValue} error={searchError} onSubmit={submitSearch} />
-		{/if}
 	</div>
 </dialog>

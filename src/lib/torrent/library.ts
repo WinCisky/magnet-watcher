@@ -4,7 +4,8 @@
 // Pieces at a file's edges may be shared with the neighbouring file: deleting
 // a file keeps the ones another saved file still needs.
 
-import { PIECE_CACHE_PREFIX, pieceOfUrl, pieceUrl } from "./store";
+import { PIECE_CACHE_PREFIX, openPieceStore, pieceOfUrl, pieceUrl } from "./store";
+import { fileBytes } from "./download";
 
 export interface SavedFileRecord {
 	/** Index in the magnet's file listing (the page's `file` URL parameter). */
@@ -106,6 +107,16 @@ export async function savedProgress(infoHash: string): Promise<Map<number, Saved
 		if (p.savedBytes > 0) progress.set(file.index, p);
 	}
 	return progress;
+}
+
+/** A saved file's bytes, for a download (every piece must be saved). */
+export async function savedFileBytes(infoHash: string, index: number): Promise<ReadableStream<Uint8Array>> {
+	const cache = await caches.open(PIECE_CACHE_PREFIX + infoHash);
+	const record = await readRecord(cache, infoHash);
+	const file = record?.files.find((f) => f.index === index);
+	if (!record || !file) throw new Error("This video isn't saved anymore");
+	const store = await openPieceStore(infoHash);
+	return fileBytes((piece) => store.get(piece), file, record.pieceLength);
 }
 
 /** Delete one file's pieces, keeping those another saved file still covers. */
