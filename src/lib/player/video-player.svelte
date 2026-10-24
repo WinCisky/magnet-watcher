@@ -185,7 +185,7 @@
 	<!-- Clicking the picture plays or pauses. -->
 	<button
 		type="button"
-		class="absolute inset-0 h-full w-full cursor-default"
+		class="absolute inset-0 h-full w-full {showControls ? 'cursor-default' : 'cursor-none'}"
 		aria-label={playing ? "Pause" : "Play"}
 		onclick={onPicture}
 		ondblclick={toggleFullscreen}
