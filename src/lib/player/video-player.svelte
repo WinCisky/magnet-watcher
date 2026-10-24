@@ -176,8 +176,16 @@
 	role="region"
 	aria-label="Video player"
 	onpointermove={poke}
-	onpointerdown={(e) => (lastPointer = e.pointerType)}
-	onpointerleave={() => (active = false)}
+	onpointerdown={(e) => {
+		lastPointer = e.pointerType;
+		// A touch on the controls keeps them up for another while.
+		if (e.pointerType !== "mouse" && showControls) poke();
+	}}
+	onpointerleave={(e) => {
+		// Touch pointers "leave" on every lift, before the click: hiding the
+		// controls then makes the tap land on the picture instead of the button.
+		if (e.pointerType === "mouse") active = false;
+	}}
 >
 	<!-- libmedia draws here (a canvas, or a <video> for formats the browser plays itself). -->
 	<div bind:this={stage} class="absolute inset-0 [&>canvas]:!h-full [&>canvas]:!w-full [&>video]:h-full [&>video]:w-full"></div>
