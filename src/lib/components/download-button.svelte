@@ -48,13 +48,13 @@
 	disabled={saved !== null}
 	aria-label={title}
 	{title}
-	class={error ? "text-destructive" : ""}
+	class={[error && "text-destructive", !iconOnly && "max-sm:w-8 max-sm:px-0"]}
 >
 	{#if saved !== null}
 		<LoaderCircleIcon class="animate-spin" />
-		{#if !iconOnly}<span class="tabular-nums">{percent}%</span>{/if}
+		{#if !iconOnly}<span class="tabular-nums max-sm:sr-only">{percent}%</span>{/if}
 	{:else}
 		<DownloadIcon />
-		{#if !iconOnly}{error ? "Retry download" : "Download"}{/if}
+		{#if !iconOnly}<span class="max-sm:sr-only">{error ? "Retry download" : "Download"}</span>{/if}
 	{/if}
 </Button>
