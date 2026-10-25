@@ -1,5 +1,20 @@
 import { describe, expect, it } from "vitest";
-import { fixAviFourcc, normalizeSubtitle } from "./quirks";
+import { fixAviFourcc, normalizeSubtitle, webGpuFlickers } from "./quirks";
+
+describe("webGpuFlickers", () => {
+	const chrome = (os: string) => `Mozilla/5.0 (${os}) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/155.0.0.0 Safari/537.36`;
+	it("is true for Chromium-based browsers on desktop Linux", () => {
+		expect(webGpuFlickers(chrome("X11; Linux x86_64"))).toBe(true);
+		expect(webGpuFlickers(`${chrome("X11; Linux x86_64")} Edg/155.0.0.0`)).toBe(true);
+	});
+	it("is false elsewhere", () => {
+		expect(webGpuFlickers(chrome("Windows NT 10.0; Win64; x64"))).toBe(false);
+		expect(webGpuFlickers(chrome("Macintosh; Intel Mac OS X 10_15_7"))).toBe(false);
+		expect(webGpuFlickers(chrome("Linux; Android 10; K"))).toBe(false);
+		expect(webGpuFlickers(chrome("X11; CrOS x86_64 14541.0.0"))).toBe(false);
+		expect(webGpuFlickers("Mozilla/5.0 (X11; Linux x86_64; rv:140.0) Gecko/20100101 Firefox/140.0")).toBe(false);
+	});
+});
 
 /** "strf", size 40, then a BITMAPINFOHEADER whose biCompression is `tag`. */
 function strf(tag: string): Uint8Array {

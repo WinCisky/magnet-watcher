@@ -26,6 +26,17 @@ export function fixAviFourcc(bytes: Uint8Array, offset: number, length = bytes.l
 }
 
 /**
+ * Chromium-based browsers (Chrome, Brave, Edge, Opera…) on desktop Linux,
+ * where libmedia's WebGPU canvas flickers black (seen on NVIDIA under
+ * Wayland: WebGPU runs on Vulkan, handed to a GL compositor). WebGL is fine
+ * there. Android says "Linux" too but plays fine, and Firefox doesn't offer
+ * WebGPU there anyway.
+ */
+export function webGpuFlickers(ua: string): boolean {
+	return /Linux/.test(ua) && !/Android/.test(ua) && /Chrom(?:e|ium)\//.test(ua);
+}
+
+/**
  * A subtitle file as libmedia's parsers want it: UTF-8 (many files are
  * Windows-1252, or UTF-16 with a byte order mark), "\n" line ends, and a
  * blank line at the end (its SRT parser drops a last cue without one).

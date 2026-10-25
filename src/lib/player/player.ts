@@ -10,7 +10,7 @@
 import type AVPlayerType from "@libmedia/avplayer";
 import { codecName, extensionOf, wasmBaseUrl } from "./codecs";
 import { ReadCursor } from "./cursor";
-import { AVI_HEADER_BYTES, fixAviFourcc, normalizeSubtitle } from "./quirks";
+import { AVI_HEADER_BYTES, fixAviFourcc, normalizeSubtitle, webGpuFlickers } from "./quirks";
 import type { ByteSource, SubtitleSource } from "./source";
 import {
 	MEDIA_SUBTITLE,
@@ -325,6 +325,7 @@ export class VideoPlayer {
 				wasmBaseUrl: wasmBaseUrl(),
 				enableHardware: true,
 				enableWebCodecs: true,
+				enableWebGPU: !webGpuFlickers(navigator.userAgent),
 				enableWorker: true,
 			});
 			this.player = player;
